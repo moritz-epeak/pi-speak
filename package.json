@@ -1,0 +1,27 @@
+{
+  "name": "voice-output",
+  "version": "2.0.3",
+  "description": "Text-to-speech for Pi coding agent. ~90ms latency, 8 voices, self-contained package.",
+  "keywords": ["pi-package", "tts", "voice", "speech", "speakturbo"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "dependencies": {
+    "typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "postinstall": "bash scripts/install.sh"
+  },
+  "files": [
+    "extensions/index.ts",
+    "daemon/daemon_streaming.py",
+    "daemon/requirements.txt",
+    "scripts/install.sh",
+    "README.md",
+    "CHANGELOG.md"
+  ]
+}
