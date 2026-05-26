@@ -25,16 +25,7 @@ const DAEMON_PORT = parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
 const DAEMON_HOST = "127.0.0.1";
 const DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
 
-const VOICES = [
-  "alba (female, default)",
-  "marius (male)",
-  "javert (male)",
-  "jean (male)",
-  "fantine (female)",
-  "cosette (female)",
-  "eponine (female)",
-  "azelma (female)",
-];
+const VOICE_NAMES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
 
 // ───────────────────────────────────────────────────────────
 // Daemon management
@@ -155,14 +146,17 @@ function speakText(text: string, voice: string): Promise<boolean> {
 export default function voiceOutputExtension(pi: ExtensionAPI) {
   ensureDaemonRunning();
 
+  // Build voice list string once from the canonical array
+  const voiceList = VOICE_NAMES.join(", ");
+  const voiceLines = VOICE_NAMES.map((v) => `  - ${v}`).join("\n");
+
   const toolDef = {
     name: "speak",
     label: "Speak",
     description:
       "Convert text to spoken audio output using the system speaker. " +
       "Ultra-fast (~90ms to first sound) using the speakturbo engine.\n\n" +
-      "Supported voices:\n" +
-      VOICES.map((v) => `  - ${v}`).join("\n"),
+      "Supported voices:\n" + voiceLines,
     promptSnippet: "Read text aloud using TTS",
     promptGuidelines: [
       "Use the speak tool whenever the user asks you to read a response aloud or speak something out loud. Do not just say you will read — actually call the tool.",
@@ -177,8 +171,7 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
       }),
       voice: Type.Optional(
         Type.String({
-          description:
-            "Voice to use. Default: alba. Options: alba (female), marius (male), javert (male), jean (male), fantine (female), cosette (female), eponine (female), azelma (female).",
+          description: `Voice to use. Default: alba. Options: ${voiceList}.`,
           default: "alba",
         })
       ),

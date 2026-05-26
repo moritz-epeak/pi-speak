@@ -19,6 +19,8 @@ pi install git:github.com/moritz-epeak/pi-speak
 
 The install script finds Python 3.10+, creates a `.venv`, installs dependencies (pocket-tts, fastapi, uvicorn), and pre-downloads model weights (~100MB) so the first speak call is fast.
 
+See [docs/install-explained.md](docs/install-explained.md) for what the install script does step by step.
+
 ## Requirements
 
 - Python 3.10+ (macOS system `python3` is 3.9 — won't work)
@@ -57,45 +59,47 @@ daemon/daemon_streaming.py (FastAPI + pocket-tts, port 7125)
 
 The daemon auto-shuts down after 1 hour idle (~100MB freed).
 
+See [docs/architecture.md](docs/architecture.md) for a detailed technical walkthrough.
+
 ## Features
 
 - **~90ms latency** — first audio arrives before generation finishes. Feels instant.
 - **Streaming playback** — starts playing mid-generation instead of waiting for the full file.
 - **Synchronous playback** — `afplay` blocks until done. No overlapping processes, no mute on rapid calls.
 - **Self-contained** — single `pi install`, no manual path config, no external repo clone.
-- **8 voices** — male and female options (`alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`).
+- **8 voices** — male and female options.
 - **Auto-shutdown** — daemon frees ~100MB after 1hr idle. No manual process management.
 - **Health checks** — verifies the daemon is alive before every speak call, auto-restarts if crashed.
 - **CPU only** — runs on Apple Silicon CPU. Fast enough for ~90ms.
 
 ## Pros
 
-- **No mute on rapid calls** — the old Kokoro backend used `Popen` fire-and-forget, which caused CoreAudio contention on macOS. Speak uses synchronous `execSync` — each call blocks until `afplay` finishes.
+- **No mute on rapid calls** — synchronous playback means no overlapping audio processes.
 - **No cold start** — model is pre-downloaded during install. First speak call is ~90ms, not 2-5s.
-- **No external dependencies** — everything is bundled in the package. No cloning Speak-Turbo, no managing a separate Python environment.
+- **No external dependencies** — everything is bundled in the package.
 - **Resistant to crashes** — health checks restart the daemon automatically if it dies.
 
-## Cons & Roadmap
+## Limitations
 
-| Limitation | Future direction |
+| Limitation | Notes |
 |---|---|
-| **macOS only** (`afplay`) | Add Linux `aplay` / cross-platform audio backend |
-| **Python 3.10+ required** | Bundle a portable Python runtime or use a pre-built binary |
-| **No voice cloning** | Add support for custom voice `.wav` files (Speak-Turbo CLI already supports this) |
-| **No emotion tags** | Integrate Chatterbox-style `[laugh]`, `[sigh]` tags |
-| **No non-blocking mode** | Add `--background` flag for fire-and-forget playback |
-| **Single daemon port (7125)** | Add auto-port-fallback when port is in use |
-| **~100MB download on install** | Show progress bar during download; lazy-download as fallback |
+| **macOS only** (`afplay`) | Linux `aplay` not yet supported |
+| **No voice cloning** | Custom `.wav` voices not yet supported |
+| **No emotion tags** | No `[laugh]`, `[sigh]` support |
+| **No non-blocking mode** | No fire-and-forget playback option |
+| **Single daemon port (7125)** | No auto-fallback if port is in use |
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `package.json` | Pi package manifest (`name: "speak"`, `pi: { extensions: ["./extensions"] }`) |
+| `package.json` | Pi package manifest (`name: "speak"`) |
 | `extensions/index.ts` | Pi extension — registers the `speak` tool |
 | `daemon/daemon_streaming.py` | SpeakTurbo TTS daemon (FastAPI + pocket-tts) |
 | `daemon/requirements.txt` | Python dependencies |
-| `scripts/install.sh` | Setup script — creates `.venv`, installs deps, pre-downloads model |
+| `scripts/install.sh` | Setup script |
+| `docs/architecture.md` | Technical architecture documentation |
+| `docs/install-explained.md` | Install script step-by-step explanation |
 
 ## Credits
 
