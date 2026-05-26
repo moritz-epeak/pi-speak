@@ -1,6 +1,6 @@
 {
-  "name": "voice-output",
-  "version": "2.0.3",
+  "name": "speak",
+  "version": "2.0.4",
   "description": "Text-to-speech for Pi coding agent. ~90ms latency, 8 voices, self-contained package.",
   "keywords": ["pi-package", "tts", "voice", "speech", "speakturbo"],
   "license": "MIT",
