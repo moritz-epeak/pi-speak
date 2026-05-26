@@ -57,35 +57,35 @@ daemon/daemon_streaming.py (FastAPI + pocket-tts, port 7125)
 
 The daemon auto-shuts down after 1 hour idle (~100MB freed).
 
-## Pros & Cons
+## Features
 
-### Pros
 - **~90ms latency** — first audio arrives before generation finishes. Feels instant.
-- **No mute on rapid calls** — synchronous `afplay` blocks until done. No overlapping processes.
+- **Streaming playback** — starts playing mid-generation instead of waiting for the full file.
+- **Synchronous playback** — `afplay` blocks until done. No overlapping processes, no mute on rapid calls.
 - **Self-contained** — single `pi install`, no manual path config, no external repo clone.
+- **8 voices** — male and female options (`alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`).
 - **Auto-shutdown** — daemon frees ~100MB after 1hr idle. No manual process management.
-- **Streaming** — starts playing mid-generation instead of waiting for the full file.
-- **8 voices** — male and female options, decent quality for a ~100MB model.
 - **Health checks** — verifies the daemon is alive before every speak call, auto-restarts if crashed.
+- **CPU only** — runs on Apple Silicon CPU. Fast enough for ~90ms.
 
-### Cons
-- **macOS only** — uses `afplay` for playback. Linux (`aplay`) would need a PR.
-- **Python 3.10+ required** — macOS system Python is 3.9. Needs a manually installed Python.
-- **8 voices only** — no voice cloning, no emotion tags, no custom voice uploads.
-- **~100MB download** — model weights download on first install. Takes a few seconds.
-- **No non-blocking mode** — synchronous playback blocks the tool. Can't fire-and-forget.
-- **Single daemon port** — port 7125 is hardcoded (configurable via `SPEAKTURBO_PORT` env var).
-- **CPU only** — runs on Apple Silicon CPU (no GPU acceleration). Fast enough for ~90ms but not real-time factor 10x+.
+## Pros
 
-### When to use Speak vs alternatives
+- **No mute on rapid calls** — the old Kokoro backend used `Popen` fire-and-forget, which caused CoreAudio contention on macOS. Speak uses synchronous `execSync` — each call blocks until `afplay` finishes.
+- **No cold start** — model is pre-downloaded during install. First speak call is ~90ms, not 2-5s.
+- **No external dependencies** — everything is bundled in the package. No cloning Speak-Turbo, no managing a separate Python environment.
+- **Resistant to crashes** — health checks restart the daemon automatically if it dies.
 
-| Situation | Recommend |
-|-----------|-----------|
-| Fast voice responses (~90ms) | **Speak** |
-| Voice cloning or custom voices | [Speak-Turbo CLI](https://github.com/EmZod/Speak-Turbo) or Chatterbox |
-| Emotion tags (`[laugh]`, `[sigh]`) | Chatterbox |
-| Linux or cross-platform | Speak-Turbo CLI (has `aplay` fallback) |
-| Non-blocking playback | Fork Speak to add `--background` flag |
+## Cons & Roadmap
+
+| Limitation | Future direction |
+|---|---|
+| **macOS only** (`afplay`) | Add Linux `aplay` / cross-platform audio backend |
+| **Python 3.10+ required** | Bundle a portable Python runtime or use a pre-built binary |
+| **No voice cloning** | Add support for custom voice `.wav` files (Speak-Turbo CLI already supports this) |
+| **No emotion tags** | Integrate Chatterbox-style `[laugh]`, `[sigh]` tags |
+| **No non-blocking mode** | Add `--background` flag for fire-and-forget playback |
+| **Single daemon port (7125)** | Add auto-port-fallback when port is in use |
+| **~100MB download on install** | Show progress bar during download; lazy-download as fallback |
 
 ## Files
 
