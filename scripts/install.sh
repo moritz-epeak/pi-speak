@@ -6,34 +6,27 @@ VENV_DIR="$PACKAGE_DIR/.venv"
 
 echo "voice_output: setting up Python environment..."
 
-# pocket-tts requires Python >= 3.10. Find the best available Python.
+# Find Python 3.10+ (pocket-tts requires >=3.10)
 PYTHON=""
-for candidate in python3.13 python3.12 python3.11 python3.10; do
-    if command -v "$candidate" &>/dev/null; then
-        PYTHON="$candidate"
-        break
+for cmd in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$cmd" &>/dev/null; then
+        ver=$("$cmd" --version 2>&1 | grep -oP '\d+\.\d+')
+        major="${ver%%.*}"
+        minor="${ver#*.}"
+        if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+            PYTHON="$cmd"
+            echo "  Found Python $ver ($cmd)"
+            break
+        fi
     fi
 done
 
 if [ -z "$PYTHON" ]; then
-    # Fall back to python3, but check its version
-    PYTHON="python3"
-    if command -v "$PYTHON" &>/dev/null; then
-        VER=$("$PYTHON" --version 2>&1 | grep -oP '(?<= )[0-9]+\.[0-9]+')
-        MAJOR="${VER%.*}"
-        if [ "$MAJOR" -lt 10 ] 2>/dev/null; then
-            echo "Error: Python 3.10+ required but found $VER."
-            echo "Install Python 3.10+ from https://python.org or via your package manager."
-            exit 1
-        fi
-    else
-        echo "Error: python3 is required but not found."
-        echo "Install Python 3.10+ from https://python.org or via your package manager."
-        exit 1
-    fi
+    echo "Error: Python 3.10+ is required but not found."
+    echo "  Detected: $(python3 --version 2>&1)"
+    echo "  Install Python 3.10+ from https://python.org or via your package manager."
+    exit 1
 fi
-
-echo "  Using $PYTHON ($($PYTHON --version 2>&1))"
 
 # Create venv if missing
 if [ ! -d "$VENV_DIR" ]; then

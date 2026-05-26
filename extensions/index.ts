@@ -8,8 +8,6 @@ import http from "node:http";
 // Path resolution — works regardless of install location
 // ───────────────────────────────────────────────────────────
 
-// __dirname for CommonJS; import.meta.url for ESM. Pi uses jiti (ESM-compatible),
-// but __dirname is more reliable across module systems.
 const EXTENSION_DIR = typeof __dirname !== "undefined"
   ? __dirname
   : path.dirname(new URL(import.meta.url).pathname);
@@ -27,26 +25,7 @@ const DAEMON_PORT = parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
 const DAEMON_HOST = "127.0.0.1";
 const DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
 
-// Voice mapping: Kokoro-style names → speakturbo voices
-const VOICE_MAP: Record<string, string> = {
-  af_heart: "alba",
-  af_bella: "fantine",
-  af_nicole: "cosette",
-  af_sarah: "eponine",
-  af_en: "azelma",
-  am_adam: "marius",
-  am_winston: "javert",
-  alba: "alba",
-  marius: "marius",
-  javert: "javert",
-  jean: "jean",
-  fantine: "fantine",
-  cosette: "cosette",
-  eponine: "eponine",
-  azelma: "azelma",
-};
-
-const SPEAKTURBO_VOICES = [
+const VOICES = [
   "alba (female, default)",
   "marius (male)",
   "javert (male)",
@@ -149,8 +128,7 @@ function speakText(text: string, voice: string): Promise<boolean> {
         return;
       }
 
-      const stVoice = VOICE_MAP[voice] ?? VOICE_MAP["af_heart"] ?? "alba";
-      const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(stVoice)}`;
+      const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`;
 
       const tmpDir = execSync("mktemp -t speakturbo_XXXXX").toString().trim();
       const tmpFile = `${tmpDir}.wav`;
@@ -184,10 +162,7 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
       "Convert text to spoken audio output using the system speaker. " +
       "Ultra-fast (~90ms to first sound) using the speakturbo engine.\n\n" +
       "Supported voices:\n" +
-      SPEAKTURBO_VOICES.map((v) => `  - ${v}`).join("\n") +
-      "\n\nLegacy Kokoro voice names also work (mapped automatically):\n" +
-      "  af_heart → alba, af_bella → fantine, af_nicole → cosette\n" +
-      "  af_sarah → eponine, am_adam → marius, am_winston → javert",
+      VOICES.map((v) => `  - ${v}`).join("\n"),
     promptSnippet: "Read text aloud using TTS",
     promptGuidelines: [
       "Use the speak tool whenever the user asks you to read a response aloud or speak something out loud. Do not just say you will read — actually call the tool.",
@@ -203,7 +178,7 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
       voice: Type.Optional(
         Type.String({
           description:
-            "Voice to use. Default: alba. Options: alba (female), marius (male), javert (male), jean (male), fantine (female), cosette (female), eponine (female), azelma (female). Kokoro names like af_heart also work.",
+            "Voice to use. Default: alba. Options: alba (female), marius (male), javert (male), jean (male), fantine (female), cosette (female), eponine (female), azelma (female).",
           default: "alba",
         })
       ),
