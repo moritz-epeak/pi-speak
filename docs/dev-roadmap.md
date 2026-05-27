@@ -83,3 +83,40 @@ Creates a new connection every health check. Could reuse via
 
 Streams into a raw file descriptor. Could use `fetch` +
 `fs.createWriteStream` for simpler code and built-in retry logic.
+
+---
+
+## Feature Ideas (from pi-tts-explainer / pi-talk research)
+
+### 9. Stop controls — Esc to cut audio
+
+Register a terminal input listener that stops playback on Esc or
+Ctrl+Space (similar to pi-tts-explainer). Currently there's no way to
+interrupt audio mid-speech.
+
+**Reference:** pi-tts-explainer `tts.ts` — `stopSpeech()` kills the child
+process and cleans temp files. `index.ts` registers
+`onTerminalInput` to detect Esc (`\u001b`) and NUL (`\u0000` for
+Ctrl+Space).
+
+### 10. Config file for voice defaults
+
+Add a JSON config file so users can set default voice, playback behavior,
+and auto-speech thresholds without editing source code.
+
+**Reference:** pi-talk `config.ts` — global (`~/.pi/agent/talk.json`) +
+project (`.pi/talk.json`) merge with deep merge, validation, and source
+tracking. pi-tts-explainer `config.ts` — single JSON with threshold
+overrides.
+
+### 11. Interrupt / queue playback modes
+
+Let users choose between:
+- **Interrupt** (default, current behavior) — new speak call stops current
+  audio and starts fresh
+- **Queue** — multiple speak calls queue up and play in sequence
+- **Fire-and-forget** — non-blocking mode for users who prefer overlap
+
+**Reference:** pi-talk `playback-controller.ts` — configurable
+`onOverlap: "interrupt" | "queue"` with a `PlaybackController` that
+manages active process and queue.
