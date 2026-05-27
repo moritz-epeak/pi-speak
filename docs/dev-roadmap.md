@@ -2,7 +2,7 @@
 
 ## Current State
 
-### What pi-speak does well (keep these)
+### What pi-speak does well
 
 - **~90ms latency** — first audio arrives before generation finishes. Streaming TTS
   is a real differentiator.
@@ -21,7 +21,6 @@
 - **No stop controls** — no way to interrupt audio mid-speech.
 - **No testability** — direct syscalls in a single file make testing impossible.
 - **No playback modes** — synchronous only.
-- **No text sanitization** — markdown, tables, and code are spoken as-is.
 
 ---
 
@@ -72,16 +71,16 @@ way to interrupt audio mid-speech.
 - On Esc: kill `afplay`, remove temp file, clear state
 - Keep it simple — no Ctrl+Space, no process group kill, just `child.kill()`
 
-#### Text sanitization before speaking
+#### Text sanitization as safety net
 
-Strip markdown formatting, code blocks, and table syntax before sending text to the
-TTS daemon. Currently the raw assistant text is spoken as-is, which means markdown
-syntax and code are read aloud.
+Add a `prepareText()` function that strips markdown formatting before sending text
+ to the TTS daemon. The agent guidelines already tell the model to speak naturally,
+ but a code-side sanitizer catches cases where the agent passes raw markdown.
 
 **Scope:**
 - Add a `prepareText()` function in `index.ts`
-- Strip markdown: code fences, inline code, links, headings, list markers, tables
-- Normalize whitespace and truncate to a configurable max length
+- Strip: code fences, inline code, links, headings, list markers, tables
+- Normalize whitespace and truncate to configurable max length
 - Regex-based, no LLM naturalization
 
 ---
@@ -136,6 +135,6 @@ logic. Current implementation works fine.
 | Error propagation | pi-talk, pi-tts-explainer | Wire failures to the model instead of optimistic results. |
 | Config file | pi-talk | Even a simple config file beats hardcoded defaults. |
 | Stop controls | pi-tts-explainer | Users need a way to interrupt audio. Esc is universal. |
-| Text sanitization | pi-tts-explainer | Raw markdown sounds terrible when spoken. Strip it. |
+| Text sanitization | pi-tts-explainer | Code-side safety net in case the agent passes raw markdown. |
 | Playback controller | pi-talk | Separating concerns makes testing possible. |
 | Operations interfaces | pi-talk | Injectable externals enable unit tests without mocks. |
