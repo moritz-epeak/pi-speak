@@ -28,30 +28,6 @@ See [docs/install-explained.md](docs/install-explained.md) for what the install 
 - **macOS** (for `afplay` audio playback)
 - **~100MB disk** for model weights
 
-## Usage
-
-### Tool: `speak`
-
-| Parameter | Type   | Description | Default |
-|-----------|--------|-------------|---------|
-| `text`    | string | Text to speak aloud | required |
-| `voice`   | string | Voice to use | `alba` |
-
-**Voices:** alba (female, default), marius (male), javert (male), jean (male), fantine (female), cosette (female), eponine (female), azelma (female)
-
-### Agent guidelines (injected every turn)
-
-The extension injects a comprehensive voice behavior guideline into the system prompt every turn:
-
-- The speak tool is your primary channel for conversational responses. Use it when the user asks you to read, explain, or converse. Do not just say you will speak — actually call the tool.
-- **Call the speak tool at most ONCE per turn.** Use it for the narrative headline or key takeaway. Then provide complementary detail — code, tables, data — in your text response.
-- **Call the speak tool at the very start of your response**, before writing any other text. This ensures audio begins playing immediately, in parallel with your written text.
-- After speaking, do not simply echo the spoken words verbatim in your text. Complementary text (code blocks, tables, additional detail not spoken) is welcome. The spoken delivery handles narration; your text handles structure.
-- When speaking, formulate your response as natural spoken language. Avoid markdown formatting, bullet points, numbered lists, emojis, bold markers, and any visual-only text conventions.
-- Use text output for code, tables, syntax, and structured information. Use voice for natural conversation, explanations, and spoken feedback.
-- Keep chain-of-thought / reasoning concise. Do not pad with long internal monologue.
-- Text and voice can be complementary: use text for visual structure (tables, code) and voice for the narrative explaining it.
-
 ## Architecture
 
 ```
@@ -67,6 +43,17 @@ daemon/daemon_streaming.py (FastAPI + pocket-tts, port 7125)
 The daemon auto-shuts down after 1 hour idle (~100MB freed).
 
 See [docs/architecture.md](docs/architecture.md) for a detailed technical walkthrough.
+
+## Usage
+
+### Tool: `speak`
+
+| Parameter | Type   | Description | Default |
+|-----------|--------|-------------|---------|
+| `text`    | string | Text to speak aloud | required |
+| `voice`   | string | Voice to use | `alba` |
+
+**Voices:** alba (female, default), marius (male), javert (male), jean (male), fantine (female), cosette (female), eponine (female), azelma (female)
 
 ## Features
 
@@ -90,6 +77,32 @@ These capabilities are provided by the extension's TypeScript integration:
 - **No cold start** — model weights are pre-downloaded during install. First speak call is ~90ms, not 2-5s.
 - **Resistant to crashes** — health checks restart the daemon automatically if it dies.
 
+## Token Cost
+
+Every speak call consumes context tokens. Understanding the cost helps you decide when to speak vs. write.
+
+| Component | Approximate tokens |
+|-----------|-------------------:|
+| Tool call (function name + JSON wrapper) | ~25–35 tokens |
+| Spoken text (appears once in tool call params) | length of text in tokens |
+| Tool result (`"✓ spoken"`) | ~2 tokens |
+| **Total per speak call** | **spoken text tokens + ~30 overhead** |
+
+Speaking costs roughly the same as writing — the text appears once in the tool call parameters and is never echoed in the result. The spoken delivery is effectively free bandwidth on top of the same token budget.
+
+## Agent guidelines
+
+The extension injects voice behavior rules into the system prompt every turn. These govern when and how the agent uses the speak tool:
+
+- **Use speak as your primary voice channel.** Call it when the user asks you to read, explain, or converse. Don't just say you will speak — actually call the tool.
+- **Call speak at most once per turn.** Use it for the narrative headline or key takeaway. Provide complementary detail — code, tables, data — in your text response.
+- **Call speak at the very start of your response.** Audio begins immediately, in parallel with your written text.
+- **After speaking, do not echo verbatim.** Complementary text (code blocks, tables, additional detail) is welcome. The spoken delivery handles narration; your text handles structure.
+- **When speaking, use natural spoken language.** Avoid markdown formatting, bullet points, numbered lists, emojis, bold markers, and any visual-only text conventions.
+- **Use text for code, tables, syntax, and structured information.** Use voice for natural conversation, explanations, and spoken feedback.
+- **Keep chain-of-thought concise.** Don't pad with long internal monologue.
+- **Text and voice are complementary channels.** Use text for visual structure (tables, code) and voice for the narrative explaining it.
+
 ## Limitations
 
 | Limitation | Notes |
@@ -111,38 +124,6 @@ These capabilities are provided by the extension's TypeScript integration:
 | `scripts/install.sh` | Setup script |
 | `docs/architecture.md` | Technical architecture documentation |
 | `docs/install-explained.md` | Install script step-by-step explanation |
-
-## Token Cost
-
-Every speak call consumes context tokens. Understanding the cost helps you decide when to speak vs. write.
-
-### Cost breakdown
-
-| Component | Approximate tokens |
-|-----------|-------------------:|
-| Tool call (function name + JSON wrapper) | ~25–35 tokens |
-| Spoken text (appears once in tool call params) | length of text in tokens |
-| Tool result (`"✓ spoken"`) | ~2 tokens |
-| **Total per speak call** | **spoken text tokens + ~30 overhead** |
-
-### How it compares
-
-Speaking is typically **cheaper than writing the same text as a regular message**:
-
-| Approach | Token cost |
-|----------|-----------:|
-| Speak tool call | text tokens + ~30 (no echo in result) |
-| Writing the same text as assistant message | text tokens + ~30 (message wrapper overhead) |
-| Writing + speaking (echo) | 2× text tokens + ~60 overhead |
-
-The speak tool avoids echo — the text is passed as a tool parameter once and spoken aloud, but never repeated in the result. The tool result is a minimal 2-token marker. This makes speaking essentially the same cost as writing, with the benefit of audio delivery.
-
-### Guidelines for cost-conscious use
-
-- **Use speak for headlines and key takeaways.** A 20-token spoken summary saves writing a 200-token paragraph.
-- **Use text for code, tables, and structured data.** These are verbose when spoken and cheap when written.
-- **Don't echo.** The speak result is `"✓ spoken"` — 2 tokens. Adding the spoken text to your written response doubles the cost.
-- **One speak per turn.** Multiple speak calls multiply the overhead. One well-placed call covers the narrative.
 
 ## Credits
 
