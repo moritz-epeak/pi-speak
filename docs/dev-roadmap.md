@@ -20,23 +20,23 @@ core philosophy: **minimal, self-contained, low latency, reliable.**
 
 ### What pi-speak does well (keep these)
 
-- **~90ms latency** — first audio arrives before generation finishes. Unique among
-  competitors. Streaming TTS is a real differentiator.
+- **~90ms latency** — first audio arrives before generation finishes. Streaming TTS
+  is a real differentiator among similar Pi speech packages.
 - **Synchronous playback** — `afplay` blocks until done. No mute on rapid calls.
-  Simpler and more reliable than pi-talk's interrupt/queue management.
+  Simpler than interrupt/queue management.
 - **Self-contained** — single `pi install`, no `uv` dependency, no system Python
-  pollution beyond `.venv`. Competitors require `uv` or system `say`.
+  pollution beyond `.venv`.
 - **Health checks per call** — verifies daemon alive before every TTS request,
-  auto-restarts on crash. More resilient than pi-talk's one-time `ensureReady`.
+  auto-restarts on crash.
 - **8 built-in voices** — good variety, no config needed.
 - **Guidelines injection** — comprehensive voice behavior rules injected every turn.
 
-### What pi-speak is missing (learn from competitors)
+### What pi-speak is missing (learn from similar projects)
 
 - **No error propagation** — optimistic `✓ spoken` means silence on failure. Both
-  competitors handle errors gracefully.
+  pi-tts-explainer and pi-talk handle errors gracefully.
 - **No config file** — voice defaults, port, and behavior are hardcoded. Both
-  competitors have config systems.
+  pi-tts-explainer and pi-talk have config systems.
 - **No stop controls** — no way to interrupt audio mid-speech. pi-tts-explainer has
   Esc/Ctrl+Space, pi-talk has `/quiet` and keybindings.
 - **No testability** — direct syscalls in a single file make testing impossible.
@@ -171,37 +171,11 @@ logic. Current implementation works fine.
 
 ---
 
-### P4 — Deferred (not a fit for pi-speak)
-
-These features add complexity without clear benefit for pi-speak's philosophy:
-
-#### Auto-speech mode
-Both competitors have this. pi-speak deliberately doesn't — speech should be
-intentional, not automatic. The agent decides when to speak via the `speak` tool.
-
-#### Guided explanation sessions
-pi-tts-explainer's signature feature. Niche workflow that adds significant complexity
-(new sessions, notes, return-to-parent). Not a fit for a minimal TTS tool.
-
-#### TUI overlay
-pi-talk's control panel adds TUI dependency and a large surface area. pi-speak
-doesn't need a UI — it has one tool and one job.
-
-#### Cross-platform playback detection
-pi-talk auto-detects `afplay`, `ffplay`, `mpv`, `pw-play`, `paplay`, `aplay`. Useful
-for Linux support but adds complexity. Defer until Linux is a target.
-
-#### LLM text naturalization
-pi-tts-explainer uses pi-ai to convert markdown into spoken prose. Adds token cost
-and latency. The simpler regex-based sanitization (P1) covers most cases.
-
----
-
 ## Inspiration Credit
 
 | Feature | Inspired by | Lesson |
 |---------|-------------|--------|
-| Error propagation | Both competitors | Optimistic results are fragile. Wire failures to the model. |
+| Error propagation | Both projects | Optimistic results are fragile. Wire failures to the model. |
 | Config file | pi-talk | Even a simple config file beats hardcoded defaults. |
 | Stop controls | pi-tts-explainer | Users need a way to interrupt audio. Esc is universal. |
 | Text sanitization | pi-tts-explainer | Raw markdown sounds terrible when spoken. Strip it. |
