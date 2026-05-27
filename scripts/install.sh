@@ -4,7 +4,7 @@ set -e
 PACKAGE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_DIR="$PACKAGE_DIR/.venv"
 
-echo "voice_output: setting up Python environment..."
+echo "speak: setting up Python environment..."
 
 # Find Python 3.10+ (pocket-tts requires >=3.10)
 PYTHON=""
@@ -46,6 +46,6 @@ TTSModel.load_model()
 print('  Model weights downloaded.')
 " 2>&1 || echo "  (Model download deferred to first use)"
 
-echo "voice_output: Python environment ready."
+echo "speak: Python environment ready."
 echo ""
 echo "  Run 'pi' to start using the speak tool."

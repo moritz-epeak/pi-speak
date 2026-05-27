@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn, execSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 
@@ -66,18 +67,18 @@ async function ensureDaemonRunning(): Promise<boolean> {
 
   child.stderr?.on("data", (data: Buffer) => {
     const msg = data.toString().trim();
-    if (msg) console.error("[voice_output] daemon:", msg.slice(0, 200));
+    if (msg) console.error("[speak] daemon:", msg.slice(0, 200));
   });
 
   child.on("close", (code) => {
     if (code !== 0 && code !== null) {
-      console.log("[voice_output] daemon exited (code:" + code + ")");
+      console.log("[speak] daemon exited (code:" + code + ")");
     }
     daemonReady = false;
     daemonProcess = null;
   });
   child.on("error", (e) => {
-    console.error("[voice_output] daemon error:", e.message);
+    console.error("[speak] daemon error:", e.message);
     daemonReady = false;
     daemonProcess = null;
   });
@@ -88,13 +89,13 @@ async function ensureDaemonRunning(): Promise<boolean> {
     const ok = await daemonHealth();
     if (ok) {
       daemonReady = true;
-      console.log("[voice_output] speakturbo daemon ready (~90ms latency)");
+      console.log("[speak] speakturbo daemon ready (~90ms latency)");
       return true;
     }
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  console.error("[voice_output] speakturbo daemon failed to start");
+  console.error("[speak] speakturbo daemon failed to start");
   return false;
 }
 
@@ -114,7 +115,7 @@ function speakText(text: string, voice: string): Promise<boolean> {
   return new Promise(async (resolve) => {
     try {
       if (!await ensureDaemonRunning()) {
-        console.error("[voice_output] daemon not available");
+        console.error("[speak] daemon not available");
         resolve(false);
         return;
       }
@@ -124,16 +125,53 @@ function speakText(text: string, voice: string): Promise<boolean> {
       const tmpDir = execSync("mktemp -t speakturbo_XXXXX").toString().trim();
       const tmpFile = `${tmpDir}.wav`;
 
-      const downloadCmd = `curl -s --retry 3 --retry-delay 1 -o "${tmpFile}" "${url}"`;
-      execSync(downloadCmd, { timeout: 120_000 });
+      // Download audio asynchronously — don't block the event loop
+      await new Promise<void>((dlResolve, dlReject) => {
+        const outFd = fs.openSync(tmpFile, "w");
+        const req = http.get(url, (res) => {
+          if (res.statusCode !== 200) {
+            fs.closeSync(outFd);
+            try { fs.unlinkSync(tmpFile); } catch {}
+            dlReject(new Error(`TTS daemon returned ${res.statusCode}`));
+            return;
+          }
+          const ws = fs.createWriteStream("", { fd: outFd });
+          res.pipe(ws);
+          res.on("end", () => {
+            ws.close(() => {
+              dlResolve();
+            });
+          });
+        });
+        req.on("error", (e) => {
+          fs.closeSync(outFd);
+          try { fs.unlinkSync(tmpFile); } catch {}
+          dlReject(e);
+        });
+        req.setTimeout(120_000, () => {
+          req.destroy();
+          fs.closeSync(outFd);
+          try { fs.unlinkSync(tmpFile); } catch {}
+          dlReject(new Error("Download timeout"));
+        });
+      });
 
-      execSync(`afplay "${tmpFile}"`, { timeout: 120_000, stdio: "ignore" });
+      // Play audio asynchronously
+      await new Promise<void>((playResolve, playReject) => {
+        const play = spawn("afplay", [tmpFile], { stdio: "ignore", timeout: 120_000 });
+        play.on("error", (e) => playReject(e));
+        play.on("close", (code) => {
+          if (code === 0) playResolve();
+          else playReject(new Error(`afplay exited with code ${code}`));
+        });
+      });
 
-      execSync(`rm -f "${tmpFile}"`, { stdio: "ignore" });
+      // Clean up
+      try { fs.unlinkSync(tmpFile); } catch {}
 
       resolve(true);
     } catch (e) {
-      console.error("[voice_output] speak error:", (e as Error).message?.slice(0, 120));
+      console.error("[speak] speak error:", (e as Error).message?.slice(0, 120));
       resolve(false);
     }
   });
