@@ -44,8 +44,8 @@ Path resolution is done at runtime using `__dirname` (or `import.meta.url` in ES
 When the agent calls `speak(text, voice)`:
 
 1. The `execute()` function fires `speakText()` in the background (no `await`) and immediately returns `"✓ spoken"` as the tool result.
-2. `speakText()` ensures the daemon is running, then sends a `curl` request to `GET /tts?text=...&voice=...`.
-3. The daemon streams the WAV response. `curl` saves it to a temp file.
+2. `speakText()` ensures the daemon is running, then sends an `http.get` request to `GET /tts?text=...&voice=...`.
+3. The daemon streams the WAV response. Node.js pipes the response to a temp file.
 4. `afplay` plays the temp file synchronously — the tool blocks until audio finishes.
 5. The temp file is deleted after playback.
 
@@ -88,7 +88,7 @@ A FastAPI server that loads pocket-tts once and keeps it resident.
 ### API flow
 
 ```
-curl GET /tts?text=Hello&voice=alba
+http.get /tts?text=Hello&voice=alba
   ↓
 FastAPI handler
   ↓  get_model() → TTSModel (cached, loaded once)
@@ -97,7 +97,7 @@ FastAPI handler
   ↓  each chunk: clamp(-1,1) * 32767 → short → bytes
   ↓  WAV header + audio chunks + trailing silence → StreamingResponse
   ↓
-curl writes to temp file
+Node.js http.get pipes to temp file
   ↓
 afplay plays temp file
 ```
@@ -119,8 +119,8 @@ Agent calls speak("Hello world", "alba")
   ▼
 speakText():
   │  1. ensureDaemonRunning() → GET /health
-  │  2. curl GET /tts?text=Hello%20world&voice=alba
-  │  3. curl saves streaming WAV to /tmp/speakturbo_XXXXX.wav
+  │  2. http.get /tts?text=Hello%20world&voice=alba
+  │  3. Node.js pipes streaming WAV to /tmp/speakturbo_XXXXX.wav
   │  4. afplay /tmp/...wav  (synchronous — blocks)
   │  5. rm /tmp/...wav
   ▼
