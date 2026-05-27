@@ -1,29 +1,12 @@
 # Speak — Development Roadmap
 
-## Honest Assessment
-
-Pi-speak is a focused, minimal package — a single `index.ts` with direct syscalls, no
-testability layer, no config system, and no error propagation. It gets the job done:
-~90ms latency, no mute on rapid calls, self-contained install.
-
-The other Pi speech extensions (pi-tts-explainer, pi-talk) are built with more
-engineering infrastructure: dependency injection, operations interfaces, comprehensive
-tests, ADRs with tradeoff analysis. They solve different problems at a different scale.
-
-This roadmap is not about copying them. It's about learning what they do well and
-applying those lessons where they genuinely improve pi-speak without sacrificing its
-core philosophy: **minimal, self-contained, low latency, reliable.**
-
----
-
 ## Current State
 
 ### What pi-speak does well (keep these)
 
 - **~90ms latency** — first audio arrives before generation finishes. Streaming TTS
-  is a real differentiator among similar Pi speech packages.
+  is a real differentiator.
 - **Synchronous playback** — `afplay` blocks until done. No mute on rapid calls.
-  Simpler than interrupt/queue management.
 - **Self-contained** — single `pi install`, no `uv` dependency, no system Python
   pollution beyond `.venv`.
 - **Health checks per call** — verifies daemon alive before every TTS request,
@@ -31,19 +14,14 @@ core philosophy: **minimal, self-contained, low latency, reliable.**
 - **8 built-in voices** — good variety, no config needed.
 - **Guidelines injection** — comprehensive voice behavior rules injected every turn.
 
-### What pi-speak is missing (learn from similar projects)
+### What pi-speak is missing
 
-- **No error propagation** — optimistic `✓ spoken` means silence on failure. Both
-  pi-tts-explainer and pi-talk handle errors gracefully.
-- **No config file** — voice defaults, port, and behavior are hardcoded. Both
-  pi-tts-explainer and pi-talk have config systems.
-- **No stop controls** — no way to interrupt audio mid-speech. pi-tts-explainer has
-  Esc/Ctrl+Space, pi-talk has `/quiet` and keybindings.
+- **No error propagation** — optimistic `✓ spoken` means silence on failure.
+- **No config file** — voice defaults, port, and behavior are hardcoded.
+- **No stop controls** — no way to interrupt audio mid-speech.
 - **No testability** — direct syscalls in a single file make testing impossible.
-  pi-talk's DI/operations interface pattern enables thorough testing.
-- **No playback modes** — synchronous only. pi-talk offers interrupt/queue.
+- **No playback modes** — synchronous only.
 - **No text sanitization** — markdown, tables, and code are spoken as-is.
-  pi-tts-explainer strips formatting before speaking.
 
 ---
 
@@ -60,11 +38,7 @@ The `execute()` function fires `speakText()` without `await` and immediately ret
 hears nothing. The model has no way to know the audio didn't play.
 
 **Fix:** catch the promise rejection and return `isError: true` with a descriptive
-message so the model can fall back to text-only output. No architectural change needed
-— just wire the promise chain into the tool result.
-
-**Inspiration:** both competitors handle errors. pi-talk returns synthesis errors
-as thrown exceptions. pi-tts-explainer returns `false` from `speakText()`.
+message so the model can fall back to text-only output.
 
 #### Temp file cleanup on early abort
 
@@ -78,12 +52,8 @@ in `/tmp/` isn't cleaned up. Register an abort handler to remove it.
 #### Config file for voice defaults
 
 Add a JSON config file so users can set default voice, port, and playback behavior
-without editing source code. Keep it simple — no deep merge, no validation pipeline.
-A single file at `~/.pi/agent/speak.json` that overrides hardcoded defaults.
-
-**Inspiration:** pi-talk's config system is sophisticated (global + project merge,
-deep merge, validation, source tracking). We don't need all of that — just a single
-config file that overrides `DEFAULT_VOICE`, `DAEMON_PORT`, and maybe playback mode.
+without editing source code. Keep it simple — a single file at `~/.pi/agent/speak.json`
+that overrides hardcoded defaults.
 
 **Scope:**
 - Read `~/.pi/agent/speak.json` at startup
@@ -95,10 +65,6 @@ config file that overrides `DEFAULT_VOICE`, `DAEMON_PORT`, and maybe playback mo
 
 Register a terminal input listener that stops playback on Esc. Currently there's no
 way to interrupt audio mid-speech.
-
-**Inspiration:** pi-tts-explainer registers `onTerminalInput` to detect Esc (`\u001b`)
-and Ctrl+Space (NUL `\u0000`). It kills the child process and cleans temp files.
-pi-talk uses keybindings (`alt+q`) and a `/quiet` command.
 
 **Scope:**
 - `pi.on("session_start")` registers `ctx.ui.onTerminalInput` for Esc
@@ -112,15 +78,11 @@ Strip markdown formatting, code blocks, and table syntax before sending text to 
 TTS daemon. Currently the raw assistant text is spoken as-is, which means markdown
 syntax and code are read aloud.
 
-**Inspiration:** pi-tts-explainer's `sanitizeForSpeech()` drops fenced code blocks,
-replaces inline code markers, collapses markdown heading/list/table punctuation, and
-truncates to `maxSpeechChars`.
-
 **Scope:**
-- Add a `prepareText()` function in `index.ts` (or a separate module)
+- Add a `prepareText()` function in `index.ts`
 - Strip markdown: code fences, inline code, links, headings, list markers, tables
 - Normalize whitespace and truncate to a configurable max length
-- Keep it simple — regex-based, no LLM naturalization
+- Regex-based, no LLM naturalization
 
 ---
 
@@ -134,16 +96,12 @@ Let users choose between:
 - **Queue** — multiple speak calls queue up and play in sequence.
 - **Fire-and-forget** — non-blocking, allows overlap (risks mute).
 
-**Inspiration:** pi-talk's `playback-controller.ts` manages active process and queue
-with configurable `onOverlap: "interrupt" | "queue"`. Its DI pattern makes the
-controller testable.
-
 **Scope:**
 - Extract playback into a `PlaybackController` class
 - Each mode maps to a strategy: synchronous (execSync), interrupt (spawn + kill),
   queue (spawn + chain), fire-and-forget (spawn + unref)
 - Configurable via the config file (P1)
-- Default remains synchronous — that's pi-speak's strength
+- Default remains synchronous
 
 ---
 
@@ -175,13 +133,9 @@ logic. Current implementation works fine.
 
 | Feature | Inspired by | Lesson |
 |---------|-------------|--------|
-| Error propagation | Both projects | Optimistic results are fragile. Wire failures to the model. |
+| Error propagation | pi-talk, pi-tts-explainer | Wire failures to the model instead of optimistic results. |
 | Config file | pi-talk | Even a simple config file beats hardcoded defaults. |
 | Stop controls | pi-tts-explainer | Users need a way to interrupt audio. Esc is universal. |
 | Text sanitization | pi-tts-explainer | Raw markdown sounds terrible when spoken. Strip it. |
 | Playback controller | pi-talk | Separating concerns makes testing possible. |
 | Operations interfaces | pi-talk | Injectable externals enable unit tests without mocks. |
-
-We are not copying these projects. We are learning from what they do well and applying
-those lessons where they genuinely improve pi-speak without adding unnecessary
-complexity.
