@@ -2,19 +2,29 @@
   "name": "speak",
   "version": "2.0.4",
   "description": "Text-to-speech for Pi coding agent. ~90ms latency, 8 voices, self-contained package.",
-  "keywords": ["pi-package", "tts", "voice", "speech", "speakturbo"],
+  "keywords": [
+    "pi-package",
+    "tts",
+    "voice",
+    "speech",
+    "speakturbo"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
   "dependencies": {
-    "typebox": "^0.34.0"
+    "typebox": "^1.1.39"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "scripts": {
-    "postinstall": "bash scripts/install.sh"
+    "postinstall": "bash scripts/install.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "files": [
     "extensions/index.ts",
@@ -23,5 +33,9 @@
     "scripts/install.sh",
     "README.md",
     "CHANGELOG.md"
-  ]
+  ],
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  }
 }

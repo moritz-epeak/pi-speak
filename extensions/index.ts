@@ -4,6 +4,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
+import os from "node:os";
 
 // ───────────────────────────────────────────────────────────
 // Path resolution — works regardless of install location
@@ -19,14 +20,44 @@ const VENV_DIR = path.join(PACKAGE_ROOT, ".venv");
 const VENV_PYTHON = path.join(VENV_DIR, "bin", "python3");
 
 // ───────────────────────────────────────────────────────────
+// Config file — ~/.pi/agent/speak.json
+// ───────────────────────────────────────────────────────────
+
+interface SpeakConfig {
+  voice?: string;
+  port?: number;
+  playbackMode?: "synchronous" | "interrupt" | "queue" | "fire-and-forget";
+}
+
+function loadConfig(): SpeakConfig {
+  const configPath = path.join(os.homedir(), ".pi", "agent", "speak.json");
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    return JSON.parse(raw) as SpeakConfig;
+  } catch {
+    return {};
+  }
+}
+
+const CONFIG = loadConfig();
+
+// ───────────────────────────────────────────────────────────
 // SpeakTurbo backend config
 // ───────────────────────────────────────────────────────────
 
-const DAEMON_PORT = parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
+const DAEMON_PORT = CONFIG.port ?? parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
 const DAEMON_HOST = "127.0.0.1";
 const DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
 
+const DEFAULT_VOICE = CONFIG.voice ?? "alba";
+
 const VOICE_NAMES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
+
+// ───────────────────────────────────────────────────────────
+// HTTP agent with keepAlive for health checks
+// ───────────────────────────────────────────────────────────
+
+const healthAgent = new http.Agent({ keepAlive: true });
 
 // ───────────────────────────────────────────────────────────
 // Daemon management
@@ -37,7 +68,7 @@ let daemonReady = false;
 
 function daemonHealth(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get(`${DAEMON_URL}/health`, (res) => {
+    const req = http.get(`${DAEMON_URL}/health`, { agent: healthAgent }, (res) => {
       resolve(res.statusCode === 200);
     });
     req.on("error", () => resolve(false));
@@ -54,12 +85,13 @@ async function ensureDaemonRunning(): Promise<boolean> {
     return true;
   }
 
-  try {
-    execSync("pkill -9 -f daemon_streaming.py", { stdio: "ignore" });
-  } catch {}
-  try {
-    execSync("sleep 1", { stdio: "ignore" });
-  } catch {}
+  // Async kill instead of sync pkill + sleep
+  await new Promise<void>((resolve) => {
+    const kill = spawn("pkill", ["-9", "-f", "daemon_streaming.py"], { stdio: "ignore" });
+    kill.on("close", resolve);
+    kill.on("error", resolve);
+  });
+  await new Promise((r) => setTimeout(r, 500));
 
   const child = spawn(VENV_PYTHON, [DAEMON_SCRIPT], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -85,7 +117,8 @@ async function ensureDaemonRunning(): Promise<boolean> {
 
   daemonProcess = child;
 
-  for (let i = 0; i < 60; i++) {
+  // Reduced timeout: 12 iterations * 500ms = 6s (daemon typically starts in ~3s)
+  for (let i = 0; i < 12; i++) {
     const ok = await daemonHealth();
     if (ok) {
       daemonReady = true;
@@ -108,78 +141,232 @@ function stopDaemon() {
 }
 
 // ───────────────────────────────────────────────────────────
+// Playback controller — supports multiple modes
+// ───────────────────────────────────────────────────────────
+
+type PlaybackMode = "synchronous" | "interrupt" | "queue" | "fire-and-forget";
+
+interface QueuedPlayback {
+  text: string;
+  voice: string;
+  signal?: AbortSignal;
+  resolve: (ok: boolean) => void;
+}
+
+class PlaybackController {
+  private mode: PlaybackMode;
+  private queue: QueuedPlayback[] = [];
+  private busy = false;
+
+  constructor(mode: PlaybackMode) {
+    this.mode = mode;
+  }
+
+  setMode(mode: PlaybackMode) {
+    this.mode = mode;
+  }
+
+  async play(text: string, voice: string, signal?: AbortSignal): Promise<boolean> {
+    switch (this.mode) {
+      case "synchronous":
+        return speakText(text, voice, signal);
+      case "interrupt": {
+        if (currentPlayback) {
+          try { currentPlayback.process.kill(); } catch {}
+          try { fs.unlinkSync(currentPlayback.tmpFile); } catch {}
+          currentPlayback = null;
+        }
+        return speakText(text, voice, signal);
+      }
+      case "queue": {
+        return new Promise<boolean>((resolve) => {
+          this.queue.push({ text, voice, signal, resolve });
+          this.dequeue();
+        });
+      }
+      case "fire-and-forget":
+        speakText(text, voice, signal);
+        return true;
+    }
+  }
+
+  private async dequeue() {
+    if (this.busy || this.queue.length === 0) return;
+    this.busy = true;
+    while (this.queue.length > 0) {
+      const item = this.queue.shift()!;
+      const ok = await speakText(item.text, item.voice, item.signal);
+      item.resolve(ok);
+    }
+    this.busy = false;
+    // Re-check for items pushed during drain
+    this.dequeue();
+  }
+}
+
+const playbackController = new PlaybackController(CONFIG.playbackMode ?? "synchronous");
+
+// ───────────────────────────────────────────────────────────
+// State for playback control
+// ───────────────────────────────────────────────────────────
+
+let currentPlayback: { process: ReturnType<typeof spawn>; tmpFile: string } | null = null;
+
+// ───────────────────────────────────────────────────────────
+// Text sanitization — strip markdown before sending to TTS
+// ───────────────────────────────────────────────────────────
+
+function prepareText(text: string): string {
+  return text
+    // Code fences
+    .replace(/```[\s\S]*?```/g, "")
+    // Inline code
+    .replace(/`[^`]*`/g, "")
+    // Links [text](url)
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    // Headings
+    .replace(/^#+\s*/gm, "")
+    // Bold / italic
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    // Strikethrough
+    .replace(/~~([^~]+)~~/g, "$1")
+    // List markers
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    // Table pipes
+    .replace(/\|/g, "")
+    // Normalize whitespace
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ───────────────────────────────────────────────────────────
 // Speak via HTTP to the daemon
 // ───────────────────────────────────────────────────────────
 
-function speakText(text: string, voice: string): Promise<boolean> {
-  return new Promise(async (resolve) => {
-    try {
-      if (!await ensureDaemonRunning()) {
-        console.error("[speak] daemon not available");
-        resolve(false);
-        return;
-      }
+async function speakText(text: string, voice: string, signal?: AbortSignal): Promise<boolean> {
+  let tmpFile: string | null = null;
+  let playProcess: ReturnType<typeof spawn> | null = null;
 
-      const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`;
-
-      const tmpDir = execSync("mktemp -t speakturbo_XXXXX").toString().trim();
-      const tmpFile = `${tmpDir}.wav`;
-
-      // Download audio asynchronously — don't block the event loop
-      await new Promise<void>((dlResolve, dlReject) => {
-        const outFd = fs.openSync(tmpFile, "w");
-        const req = http.get(url, (res) => {
-          if (res.statusCode !== 200) {
-            fs.closeSync(outFd);
-            try { fs.unlinkSync(tmpFile); } catch {}
-            dlReject(new Error(`TTS daemon returned ${res.statusCode}`));
-            return;
-          }
-          const ws = fs.createWriteStream("", { fd: outFd });
-          res.pipe(ws);
-          res.on("end", () => {
-            ws.close(() => {
-              dlResolve();
-            });
-          });
-        });
-        req.on("error", (e) => {
-          fs.closeSync(outFd);
-          try { fs.unlinkSync(tmpFile); } catch {}
-          dlReject(e);
-        });
-        req.setTimeout(120_000, () => {
-          req.destroy();
-          fs.closeSync(outFd);
-          try { fs.unlinkSync(tmpFile); } catch {}
-          dlReject(new Error("Download timeout"));
-        });
-      });
-
-      // Play audio asynchronously
-      await new Promise<void>((playResolve, playReject) => {
-        const play = spawn("afplay", [tmpFile], { stdio: "ignore", timeout: 120_000 });
-        play.on("error", (e) => playReject(e));
-        play.on("close", (code) => {
-          if (code === 0) playResolve();
-          else playReject(new Error(`afplay exited with code ${code}`));
-        });
-      });
-
-      // Clean up
+  const cleanup = () => {
+    if (tmpFile) {
       try { fs.unlinkSync(tmpFile); } catch {}
-
-      resolve(true);
-    } catch (e) {
-      console.error("[speak] speak error:", (e as Error).message?.slice(0, 120));
-      resolve(false);
+      tmpFile = null;
     }
-  });
+  };
+
+  try {
+    if (!await ensureDaemonRunning()) {
+      console.error("[speak] daemon not available");
+      return false;
+    }
+
+    if (signal?.aborted) {
+      return false;
+    }
+
+    const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`;
+
+    tmpFile = `${execSync("mktemp -d -t speakturbo_XXXXX").toString().trim()}/audio.wav`;
+
+    // Register abort handler for cleanup
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        // Kill playback if running
+        if (playProcess) {
+          try { playProcess.kill(); } catch {}
+          playProcess = null;
+        }
+        if (currentPlayback && currentPlayback.tmpFile === tmpFile) {
+          try { currentPlayback.process.kill(); } catch {}
+          currentPlayback = null;
+        }
+        cleanup();
+      }, { once: true });
+    }
+
+    // Download audio using fetch + writeStream
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`TTS daemon returned ${response.status}`);
+    }
+    const body = response.body;
+    if (!body) {
+      throw new Error('Empty response body from TTS daemon');
+    }
+    const reader = body.getReader();
+    const ws = fs.createWriteStream(tmpFile);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (signal?.aborted) {
+        ws.on("error", () => {}); // prevent unhandled error
+        ws.end(() => {});
+        cleanup();
+        return false;
+      }
+      ws.write(value);
+    }
+    await new Promise<void>((resolve, reject) => {
+      ws.on("error", reject);
+      ws.end(() => resolve());
+    });
+
+    if (signal?.aborted) {
+      cleanup();
+      return false;
+    }
+
+    // Play audio asynchronously
+    playProcess = spawn("afplay", [tmpFile], { stdio: "ignore", timeout: 120_000 });
+    currentPlayback = { process: playProcess, tmpFile: tmpFile };
+
+    await new Promise<void>((playResolve, playReject) => {
+      playProcess!.on("error", (e) => playReject(e));
+      playProcess!.on("close", (code) => {
+        if (currentPlayback && currentPlayback.process === playProcess) {
+          currentPlayback = null;
+        }
+        if (code === 0) playResolve();
+        else playReject(new Error(`afplay exited with code ${code}`));
+      });
+    });
+
+    // Clean up
+    cleanup();
+    return true;
+  } catch (e) {
+    cleanup();
+    console.error("[speak] speak error:", (e as Error).message?.slice(0, 120));
+    return false;
+  }
 }
 
 // ───────────────────────────────────────────────────────────
 // Extension
 // ───────────────────────────────────────────────────────────
+
+// ───────────────────────────────────────────────────────────
+// Test exports — exported only for unit testing
+// ───────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function _prepareText(text: string): string { return prepareText(text); }
+export function _loadConfig(): SpeakConfig { return loadConfig(); }
+export function _daemonHealth(): Promise<boolean> { return daemonHealth(); }
+export function _ensureDaemonRunning(): Promise<boolean> { return ensureDaemonRunning(); }
+export function _stopDaemon(): void { stopDaemon(); }
+export function _getDaemonReady(): boolean { return daemonReady; }
+export function _getDaemonProcess() { return daemonProcess; }
+export function _getCurrentPlayback() { return currentPlayback; }
+export function _setDaemonReady(val: boolean) { daemonReady = val; }
+export function _setDaemonProcess(proc: ReturnType<typeof spawn> | null) { daemonProcess = proc; }
+export function _setCurrentPlayback(val: { process: ReturnType<typeof spawn>; tmpFile: string } | null) { currentPlayback = val; }
+export function _getPlaybackController() { return playbackController; }
+export function _speakText(text: string, voice: string, signal?: AbortSignal): Promise<boolean> { return speakText(text, voice, signal); }
 
 export default function voiceOutputExtension(pi: ExtensionAPI) {
   ensureDaemonRunning();
@@ -209,19 +396,27 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
       }),
       voice: Type.Optional(
         Type.String({
-          description: `Voice to use. Default: alba. Options: ${voiceList}.`,
-          default: "alba",
+          description: `Voice to use. Default: ${DEFAULT_VOICE}. Options: ${voiceList}. Can be overridden in ~/.pi/agent/speak.json.`,
+          default: DEFAULT_VOICE,
         })
       ),
     }),
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const text = params.text;
-      const voice = params.voice ?? "alba";
+    async execute(toolCallId: string, params: { text: string; voice?: string }, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+      const text = prepareText(params.text);
+      const voice = params.voice ?? DEFAULT_VOICE;
 
-      speakText(text, voice).catch(() => {});
+      const ok = await playbackController.play(text, voice, signal);
+
+      if (!ok) {
+        return {
+          content: [{ type: "text" as const, text: "Failed to play audio. The TTS daemon may not be available." }],
+          isError: true,
+          details: { spoken: false, voice },
+        };
+      }
 
       return {
-        content: [{ type: "text", text: "✓ spoken" }],
+        content: [{ type: "text" as const, text: "✓ spoken" }],
         details: { spoken: true, voice },
       };
     },
@@ -234,6 +429,18 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
     if (!all.includes("speak")) {
       pi.registerTool(toolDef);
     }
+
+    // Stop controls — Esc to cut audio
+    ctx.ui.onTerminalInput((data) => {
+      if (data === "\x1b") {
+        if (currentPlayback) {
+          try { currentPlayback.process.kill(); } catch {}
+          try { fs.unlinkSync(currentPlayback.tmpFile); } catch {}
+          currentPlayback = null;
+          return { consume: true };
+        }
+      }
+    });
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -255,7 +462,7 @@ export default function voiceOutputExtension(pi: ExtensionAPI) {
     };
   });
 
-  pi.on("unload", async () => {
+  pi.on("session_shutdown", async (_event) => {
     stopDaemon();
   });
 }

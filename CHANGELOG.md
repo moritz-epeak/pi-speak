@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.1.0] — 2026-05-28
+
+### Added
+
+- **TypeScript type checking** (`tsconfig.json`). Runs via `npm run typecheck` (`tsc --noEmit`). Catches signature mismatches like the `onTerminalInput` crash bug (TS2554).
+- **Vitest test framework** (`vitest.config.ts`). Runs via `npm test` (`vitest run`).
+- **41 unit tests** with 59 assertions covering all critical code paths:
+  - Text sanitization (12 tests)
+  - Config loading (3 tests)
+  - Daemon health, startup, and shutdown (8 tests)
+  - speakText error handling and cleanup (5 tests)
+  - Playback modes: synchronous, interrupt, queue, fire-and-forget (5 tests)
+  - Extension registration, Esc handler, guidelines injection (8 tests)
+- **Test exports** — internal functions (`_prepareText`, `_daemonHealth`, `_speakText`, etc.) exported for isolated unit testing.
+
+### Fixed
+
+- **Typebox dependency version** — updated from `^0.34.0` to `^1.1.39` to match pi SDK requirements.
+- **`session_shutdown` event handler** — renamed from `unload` to `session_shutdown` to match the pi SDK event name.
+
 ## [2.0.4] — 2026-05-25
 
 ### Fixed
