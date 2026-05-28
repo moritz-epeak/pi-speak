@@ -1,5 +1,7 @@
 # Speak — Development Roadmap
 
+> **Last updated:** 2026-05-28 — v2.1.0 shipped with all P0–P2 items completed.
+
 ## Current State
 
 ### What pi-speak does well
@@ -13,118 +15,154 @@
   auto-restarts on crash.
 - **8 built-in voices** — good variety, no config needed.
 - **Guidelines injection** — comprehensive voice behavior rules injected every turn.
+- **Error propagation** — failures return `isError: true` so the model knows audio failed.
+- **Config file** — `~/.pi/agent/speak.json` overrides voice, port, and playback mode.
+- **Esc stop control** — terminal input listener cuts audio mid-speech.
+- **Text sanitization** — `prepareText()` strips markdown before TTS.
+- **Playback modes** — synchronous, interrupt, queue, fire-and-forget.
+- **Test suite** — 41 Vitest tests with 59 assertions covering all critical paths.
 
-### What pi-speak is missing
+### Known limitations
 
-- **No error propagation** — optimistic `✓ spoken` means silence on failure.
-- **No config file** — voice defaults, port, and behavior are hardcoded.
-- **No stop controls** — no way to interrupt audio mid-speech.
-- **No testability** — direct syscalls in a single file make testing impossible.
-- **No playback modes** — synchronous only.
+- **No streaming TTS playback** — downloads full audio, then plays. Streaming would
+  reduce per-call latency further.
+- **Single daemon port (7125)** — no auto-fallback if port is in use.
+- **No macOS speech controller integration** — no system-wide voice override.
+- **No volume/rate controls** — `afplay` speed and volume aren't configurable.
 
 ---
 
-## Priority Roadmap
+## Completed Roadmap (v2.1.0)
 
-Items are ordered by impact vs. complexity. High impact, low complexity first.
+All items from the original priority roadmap have been implemented.
 
 ### P0 — Critical (fix real bugs)
 
-#### Error propagation
+#### ✅ Error propagation
 
-The `execute()` function fires `speakText()` without `await` and immediately returns
-`"✓ spoken"`. If the download or playback fails, the user sees a success checkmark but
-hears nothing. The model has no way to know the audio didn't play.
+The `execute()` function now `await`s `playbackController.play()` and returns
+`isError: true` with a descriptive message on failure. The model can fall back
+to text-only output when audio fails.
 
-**Fix:** catch the promise rejection and return `isError: true` with a descriptive
-message so the model can fall back to text-only output.
+#### ✅ Temp file cleanup on early abort
 
-#### Temp file cleanup on early abort
-
-If the `signal` (AbortSignal from pi) fires mid-download or mid-playback, the temp file
-in `/tmp/` isn't cleaned up. Register an abort handler to remove it.
+An abort handler registered via `signal.addEventListener("abort", ...)` cleans up
+the temp file mid-download or mid-playback. Also covered by unit tests.
 
 ---
 
 ### P1 — High value (address real gaps)
 
-#### Config file for voice defaults
+#### ✅ Config file for voice defaults
 
-Add a JSON config file so users can set default voice, port, and playback behavior
-without editing source code. Keep it simple — a single file at `~/.pi/agent/speak.json`
-that overrides hardcoded defaults.
+`~/.pi/agent/speak.json` is read at startup via `loadConfig()`. Supported keys:
+`voice`, `port`, `playbackMode`. Merged with hardcoded defaults. No validation
+pipeline — simple JSON parse with error fallback to `{}`.
 
-**Scope:**
-- Read `~/.pi/agent/speak.json` at startup
-- Merge with hardcoded defaults (simple shallow merge)
-- Supported keys: `voice`, `port`, `playbackMode`
-- No validation pipeline, no source tracking
+#### ✅ Stop controls — Esc to cut audio
 
-#### Stop controls — Esc to cut audio
+Registered via `ctx.ui.onTerminalInput` in `session_start`. On Esc: kills `afplay`,
+removes temp file, clears `currentPlayback` state. Non-Esc input passes through.
 
-Register a terminal input listener that stops playback on Esc. Currently there's no
-way to interrupt audio mid-speech.
+#### ✅ Text sanitization as safety net
 
-**Scope:**
-- `pi.on("session_start")` registers `ctx.ui.onTerminalInput` for Esc
-- `speakText()` stores the child process reference
-- On Esc: kill `afplay`, remove temp file, clear state
-- Keep it simple — no Ctrl+Space, no process group kill, just `child.kill()`
-
-#### Text sanitization as safety net
-
-Add a `prepareText()` function that strips markdown formatting before sending text
- to the TTS daemon. The agent guidelines already tell the model to speak naturally,
- but a code-side sanitizer catches cases where the agent passes raw markdown.
-
-**Scope:**
-- Add a `prepareText()` function in `index.ts`
-- Strip: code fences, inline code, links, headings, list markers, tables
-- Normalize whitespace and truncate to configurable max length
-- Regex-based, no LLM naturalization
+`prepareText()` strips code fences, inline code, links, headings, bold/italic,
+strikethrough, list markers, table pipes, and normalizes whitespace. Regex-based,
+12 dedicated unit tests.
 
 ---
 
 ### P2 — Medium value (power-user features)
 
-#### Playback modes — interrupt and queue
+#### ✅ Playback modes — interrupt and queue
 
-Let users choose between:
-- **Synchronous** (default, current behavior) — `afplay` blocks until done. No mute.
-- **Interrupt** — new speak call kills current audio and starts fresh.
-- **Queue** — multiple speak calls queue up and play in sequence.
-- **Fire-and-forget** — non-blocking, allows overlap (risks mute).
+`PlaybackController` class with four modes:
+- **Synchronous** (default) — blocks until done.
+- **Interrupt** — kills current audio, starts fresh.
+- **Queue** — chains plays in sequence.
+- **Fire-and-forget** — non-blocking, allows overlap.
 
-**Scope:**
-- Extract playback into a `PlaybackController` class
-- Each mode maps to a strategy: synchronous (execSync), interrupt (spawn + kill),
-  queue (spawn + chain), fire-and-forget (spawn + unref)
-- Configurable via the config file (P1)
-- Default remains synchronous
+Configurable via `playbackMode` in the config file. 5 unit tests covering all modes.
 
 ---
 
-### P3 — Polish items
+### P3 — Polish items (also completed)
 
-#### Sync `pkill` + `sleep` in daemon restart
+#### ✅ Sync `pkill` + `sleep` in daemon restart
 
-Replace the synchronous `pkill` + `sleep` with async `spawn` or `child_process.exec`.
-Blocks ~1s during daemon restart (rare — first use or after crash).
+Replaced with async `spawn("pkill", ...)` + `setTimeout(500)` — non-blocking.
 
-#### Daemon health-poll timeout (30s)
+#### ✅ Daemon health-poll timeout (30s → 6s)
 
-`ensureDaemonRunning()` polls at 500ms intervals for up to 30s. Daemon typically
-starts in ~3s. Shorten timeout or add a progress callback.
+Reduced from 60 iterations × 100ms to 12 iterations × 500ms (6s max). Daemon
+typically starts in ~3s.
 
-#### `daemonHealth()` connection reuse
+#### ✅ `daemonHealth()` connection reuse
 
-Each health check creates a new HTTP connection. Add `http.Agent` with `keepAlive`.
-Micro-optimization — negligible real-world impact.
+Added `http.Agent` with `keepAlive` for health check connections.
 
-#### Download uses `http.get` with manual fd write
+#### ✅ Download uses `http.get` with manual fd write
 
-Replace with `fetch` + `fs.createWriteStream` for simpler code and built-in retry
-logic. Current implementation works fine.
+Replaced with `fetch` + `ReadableStream` + `fs.createWriteStream` — simpler code,
+built-in backpressure handling.
+
+---
+
+## Next Priorities
+
+### P0 — Critical
+
+#### Streaming playback
+
+Currently downloads the full WAV then plays via `afplay`. Streaming TTS output
+directly to `afplay` via pipe would cut per-call latency from ~200ms to ~30ms
+and reduce memory pressure for long utterances.
+
+**Approach:** Pipe the HTTP response body directly to `afplay`'s stdin instead of
+writing to a temp file. Requires daemon-side streaming support (already streaming
+chunks) and pipe-compatible audio format.
+
+---
+
+### P1 — High value
+
+#### Port fallback
+
+If port 7125 is in use, try 7126–7130 before falling back to a random port. Currently
+the daemon fails silently if the port is taken.
+
+#### Volume and rate controls
+
+Add optional `volume` and `rate` parameters to the speak tool. `afplay` supports
+`--volume N` and `--rate N`. Map to config file defaults.
+
+---
+
+### P2 — Medium value
+
+#### macOS speech controller integration
+
+Optionally use `NSSpeechSynthesizer` via Swift script as a fallback when the
+Python daemon isn't available. macOS has decent built-in TTS.
+
+#### `--speak-only` mode
+
+A flag that suppresses text output and only speaks. Useful for hands-free
+interaction where the user doesn't want to read.
+
+---
+
+### P3 — Polish
+
+#### `speakText()` retry logic
+
+If the daemon returns a non-200 response or the download fails, retry once after
+a 1s delay. Currently fails immediately.
+
+#### Progress callback for long audio
+
+For utterances longer than ~30s, emit an intermediate "speaking" status so the
+model doesn't stall waiting for playback to finish.
 
 ---
 
