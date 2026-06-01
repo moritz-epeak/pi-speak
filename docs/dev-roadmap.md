@@ -29,6 +29,9 @@
 - **Single daemon port (7125)** — no auto-fallback if port is in use.
 - **No macOS speech controller integration** — no system-wide voice override.
 - **No volume/rate controls** — `afplay` speed and volume aren't configurable.
+- **macOS only** — Linux `aplay` not yet supported.
+- **No voice cloning** — custom `.wav` voices not yet supported.
+- **No emotion tags** — no `[laugh]`, `[sigh]` support.
 
 ---
 
@@ -166,13 +169,4 @@ model doesn't stall waiting for playback to finish.
 
 ---
 
-## Inspiration Credit
 
-| Feature | Inspired by | Lesson |
-|---------|-------------|--------|
-| Error propagation | pi-talk, pi-tts-explainer | Wire failures to the model instead of optimistic results. |
-| Config file | pi-talk | Even a simple config file beats hardcoded defaults. |
-| Stop controls | pi-tts-explainer | Users need a way to interrupt audio. Esc is universal. |
-| Text sanitization | pi-tts-explainer | Code-side safety net in case the agent passes raw markdown. |
-| Playback controller | pi-talk | Separating concerns makes testing possible. |
-| Operations interfaces | pi-talk | Injectable externals enable unit tests without mocks. |

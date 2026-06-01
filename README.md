@@ -110,7 +110,6 @@ The extension injects voice behavior rules into the system prompt every turn. Th
 | **macOS only** (`afplay`) | Linux `aplay` not yet supported |
 | **No voice cloning** | Custom `.wav` voices not yet supported |
 | **No emotion tags** | No `[laugh]`, `[sigh]` support |
-| **No non-blocking mode** | No fire-and-forget playback option |
 | **Single daemon port (7125)** | No auto-fallback if port is in use |
 
 ## Testing
