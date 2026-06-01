@@ -45,9 +45,12 @@ const CONFIG = loadConfig();
 // SpeakTurbo backend config
 // ───────────────────────────────────────────────────────────
 
-const DAEMON_PORT = CONFIG.port ?? parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
+let DAEMON_PORT = CONFIG.port ?? parseInt(process.env.SPEAKTURBO_PORT || "7125", 10);
 const DAEMON_HOST = "127.0.0.1";
-const DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
+let DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
+
+// Candidate ports for fallback
+const FALLBACK_PORTS = [7125, 7126, 7127, 7128, 7129, 7130];
 
 const DEFAULT_VOICE = CONFIG.voice ?? "alba";
 
@@ -93,31 +96,55 @@ async function ensureDaemonRunning(): Promise<boolean> {
   });
   await new Promise((r) => setTimeout(r, 500));
 
-  const child = spawn(VENV_PYTHON, [DAEMON_SCRIPT], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // Try ports 7125-7130, read stdout for PORT_BOUND: to discover actual port
+  let boundPort: number | null = null;
+  for (const candidatePort of FALLBACK_PORTS) {
+    const child = spawn(VENV_PYTHON, [DAEMON_SCRIPT, "--port", String(candidatePort)], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
-  child.stderr?.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) console.error("[speak] daemon:", msg.slice(0, 200));
-  });
+    let stdoutBuf = "";
+    child.stdout?.on("data", (data: Buffer) => {
+      stdoutBuf += data.toString();
+    });
+    child.stderr?.on("data", (data: Buffer) => {
+      const msg = data.toString().trim();
+      if (msg) console.error("[speak] daemon:", msg.slice(0, 200));
+    });
 
-  child.on("close", (code) => {
-    if (code !== 0 && code !== null) {
-      console.log("[speak] daemon exited (code:" + code + ")");
+    child.on("close", (code) => {
+      if (code !== 0 && code !== null) {
+        console.log("[speak] daemon exited (code:" + code + ")");
+      }
+      daemonReady = false;
+      daemonProcess = null;
+    });
+    child.on("error", (e) => {
+      console.error("[speak] daemon error:", e.message);
+      daemonReady = false;
+      daemonProcess = null;
+    });
+
+    daemonProcess = child;
+
+    // Wait for daemon to start and read PORT_BOUND: from stdout
+    await new Promise((r) => setTimeout(r, 2000));
+    const match = stdoutBuf.match(/PORT_BOUND:(\d+)/);
+    if (match) {
+      boundPort = parseInt(match[1], 10);
+      console.log("[speak] Daemon bound on port " + boundPort);
+      break;
     }
-    daemonReady = false;
-    daemonProcess = null;
-  });
-  child.on("error", (e) => {
-    console.error("[speak] daemon error:", e.message);
-    daemonReady = false;
-    daemonProcess = null;
-  });
+    // Kill failed attempt
+    child.kill();
+  }
 
-  daemonProcess = child;
+  if (boundPort) {
+    DAEMON_PORT = boundPort;
+    DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
+  }
 
-  // Reduced timeout: 12 iterations * 500ms = 6s (daemon typically starts in ~3s)
+  // Health check on the actual port
   for (let i = 0; i < 12; i++) {
     const ok = await daemonHealth();
     if (ok) {

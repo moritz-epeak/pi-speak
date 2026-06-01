@@ -7,6 +7,7 @@ Auto-shuts down after 1 hour idle.
 import asyncio
 import copy
 import struct
+import sys
 import threading
 import time
 from typing import Optional
@@ -128,21 +129,50 @@ async def tts(text: str, voice: str = "alba"):
 def main():
     """Start the speakturbo daemon.
     Pre-warms the default voice so the first request is fast.
+    Accepts --port argument; tries ports 7125-7130 if the port is in use.
+    Prints PORT_BOUND:{port} so the extension can discover the actual port.
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="speakturbo daemon")
+    parser.add_argument("--port", type=int, default=7125, help="Port to try (default: 7125)")
+    args = parser.parse_args()
+
+    # Try ports from the requested one up to +5 (fallback range)
+    port = args.port
+    max_port = min(port + 5, port + 10)  # At most 10 ports
+    actual_port = None
+    for try_port in range(port, max_port):
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", try_port))
+            sock.close()
+            actual_port = try_port
+            break
+        except OSError:
+            sock.close()
+            continue
+
+    if actual_port is None:
+        print(f"ERROR: No available ports in range {port}-{max_port-1}", file=sys.stderr)
+        sys.exit(1)
+
     get_model()
     get_voice_state("alba")  # Pre-warm default
-    
+
     global _last_request_time
     _last_request_time = time.time()
-    
+
     # Start idle monitor thread
     monitor = threading.Thread(target=idle_monitor, daemon=True)
     monitor.start()
-    
+
     print(f"Voices: {VOICES}")
     print(f"Auto-shutdown after {IDLE_TIMEOUT_SECONDS/60:.0f} min idle")
-    print("Daemon listening on http://127.0.0.1:7125")
-    uvicorn.run(app, host="127.0.0.1", port=7125, log_level="warning")
+    print(f"PORT_BOUND:{actual_port}")
+    print(f"Daemon listening on http://127.0.0.1:{actual_port}")
+    uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
 
 
 if __name__ == "__main__":
