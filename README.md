@@ -115,51 +115,7 @@ The extension injects voice behavior rules into the system prompt every turn. Th
 
 ## Testing
 
-The extension has a full test suite with 41 tests covering all critical code paths:
-
-- **Text sanitization** (12 tests) — markdown stripping for code fences, inline code, links, headings, bold, italic, strikethrough, list markers, table pipes, whitespace normalization
-- **Config loading** (3 tests) — valid config, missing file, invalid JSON
-- **Daemon health** (8 tests) — health check (200 OK, non-200, network error, timeout), daemon startup (already healthy, fails to start), daemon shutdown
-- **speakText** (5 tests) — daemon unavailable, abort signal before download, empty response body, temp file cleanup on error, temp file cleanup on daemon error response
-- **Playback modes** (5 tests) — synchronous, interrupt, queue, fire-and-forget, queue drain race
-- **Extension registration** (8 tests) — tool registration, Esc handler, Esc stops current playback, non-Esc passthrough, re-register on missing tool, no re-register when present, voice guidelines injection, session shutdown
-
-### Running Tests
-
-```bash
-npm test          # Run Vitest test suite
-npm run typecheck # TypeScript type checking (tsc --noEmit)
-```
-
-### How Tests Work
-
-The test suite mocks all external dependencies:
-- **pi SDK** — `registerTool`, `on`, `getAllTools`, `ExtensionUIContext` (`onTerminalInput`)
-- **HTTP daemon** — `fetch` (download), `http.get` (health checks)
-- **File system** — `fs.readFileSync`, `fs.unlinkSync`, `fs.createWriteStream`, `child_process.spawn`, `child_process.execSync`
-- **OS** — `os.homedir` for config path resolution
-
-Internal functions are exported for testing:
-
-| Export | Tests |
-|--------|-------|
-| `_prepareText(text)` | Text sanitization |
-| `_loadConfig()` | Config loading |
-| `_daemonHealth()` | Daemon health check |
-| `_ensureDaemonRunning()` | Daemon startup |
-| `_stopDaemon()` | Daemon shutdown |
-| `_speakText(text, voice, signal?)` | speakText logic |
-| `_getPlaybackController()` | Playback controller |
-| `_getCurrentPlayback()` | Current playback state |
-| `_setCurrentPlayback(val)` | Esc handler cleanup |
-| `_getDaemonReady()` | Daemon ready state |
-
-### Adding New Tests
-
-1. Add test exports to `extensions/index.ts` if needed
-2. Write tests in `extensions/index.test.ts` following the existing patterns
-3. Run `npm test` to verify
-4. Run `npm run typecheck` to ensure no type regressions
+See [docs/testing.md](docs/testing.md) for the full test suite details (41 tests, 59 assertions).
 
 ## Files
 
@@ -172,6 +128,7 @@ Internal functions are exported for testing:
 | `scripts/install.sh` | Setup script |
 | `docs/architecture.md` | Technical architecture documentation |
 | `docs/install-explained.md` | Install script step-by-step explanation |
+| `docs/testing.md` | Test suite documentation |
 
 ## Credits
 
