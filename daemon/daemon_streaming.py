@@ -95,11 +95,23 @@ async def health():
     }
 
 
-@app.get("/tts")
-async def tts(text: str, voice: str = "alba"):
-    """Streaming TTS with per-request deep-copied voice state."""
+class TTSRequest:
+    text: str
+    voice: str = "alba"
+
+
+@app.post("/tts")
+async def tts(body: TTSRequest):
+    """Streaming TTS with per-request deep-copied voice state.
+    
+    Accepts POST with JSON body: {"text": "...", "voice": "alba"}
+    This avoids URL length limits that truncate long text.
+    """
     global _last_request_time
     _last_request_time = time.time()
+    
+    text = body.text
+    voice = body.voice
     
     if not text or not text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")

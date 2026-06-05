@@ -439,7 +439,7 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
       return false;
     }
 
-    const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`;
+    const url = `${DAEMON_URL}/tts`;
 
     // Write to temp file — afplay doesn't support stdin on macOS
     tmpFile = `${execSync("mktemp -d -t speakturbo_XXXXX").toString().trim()}/audio.wav`;
@@ -460,8 +460,12 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
       }, { once: true });
     }
 
-    // Download audio using fetch + writeStream
-    const response = await fetch(url);
+    // Download audio using POST to avoid URL length limits
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice }),
+    });
     if (!response.ok) {
       cleanup();
       throw new Error(`TTS daemon returned ${response.status}`);

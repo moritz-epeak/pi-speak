@@ -11,7 +11,7 @@ Pi agent
     ↓  registers tool, injects guidelines
 extensions/index.ts   (TypeScript, runs in Pi's runtime)
     ↓  ensures daemon is alive, sends HTTP requests
-daemon/daemon_streaming.py   (Python, FastAPI server on port 7125+)
+daemon/daemon_streaming.py   (Python, FastAPI server on port 7125+, POST /tts)
     ↓  generates audio with pocket-tts, streams WAV
 afplay (macOS CLI)   plays the WAV file
 ```
