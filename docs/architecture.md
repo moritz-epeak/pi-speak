@@ -11,7 +11,7 @@ Pi agent
     ↓  registers tool, injects guidelines
 extensions/index.ts   (TypeScript, runs in Pi's runtime)
     ↓  ensures daemon is alive, sends HTTP requests
-daemon/daemon_streaming.py   (Python, FastAPI server on port 7125)
+daemon/daemon_streaming.py   (Python, FastAPI server on port 7125+)
     ↓  generates audio with pocket-tts, streams WAV
 afplay (macOS CLI)   plays the WAV file
 ```
@@ -36,6 +36,14 @@ The extension runs a persistent Python daemon in the background. Management happ
 **On every speak call:** `speakText()` calls `ensureDaemonRunning()` again before sending the TTS request. This handles the case where the daemon crashed between calls (e.g. idle timeout, port conflict).
 
 **On crash:** The `close` event handler detects when the daemon process exits unexpectedly. It clears the `daemonReady` flag so the next speak call will restart the daemon.
+
+**Port negotiation:** When starting the daemon, `ensureDaemonRunning()` tries ports in this order:
+1. `port` from `~/.pi/agent/speak.json` (config override)
+2. The last successfully bound port (persisted in memory)
+3. Standard fallback ports 7125–7130
+4. Random high ports 7200–7999 (up to 5 attempts)
+
+If all ports are exhausted, a clear error is logged. The successful port is persisted for faster startup next time.
 
 Path resolution is done at runtime using `__dirname` (or `import.meta.url` in ESM mode), so the extension works regardless of where Pi installs the package.
 
@@ -80,7 +88,7 @@ A FastAPI server that loads pocket-tts once and keeps it resident.
 
 ### Key design
 
-- **Single daemon** — model loading is slow (~3s). Loading once and keeping it resident eliminates cold-start latency.
+- **Single daemon** — model loading is slow (~3s). Loading once and keeping it resident eliminates cold-start latency. Port negotiation tries config override, persisted port, fallback ports 7125–7130, then random high ports 7200–7999.
 - **Streaming response** — audio starts flowing before generation finishes. First audio arrives at ~90ms.
 - **Deep-copied voice state** — each request gets its own copy of the voice model state. No mutation leaks between requests.
 - **Auto-shutdown** — after 1 hour idle, the daemon kills itself. Frees ~100MB of memory.

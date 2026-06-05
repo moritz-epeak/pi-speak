@@ -110,7 +110,31 @@ The extension injects voice behavior rules into the system prompt every turn. Th
 | **macOS only** (`afplay`) | Linux `aplay` not yet supported |
 | **No voice cloning** | Custom `.wav` voices not yet supported |
 | **No emotion tags** | No `[laugh]`, `[sigh]` support |
-| **Single daemon port (7125)** | No auto-fallback if port is in use |
+
+## Port Negotiation
+
+The daemon uses a robust multi-layer port negotiation strategy so it never silently fails when ports are in use.
+
+### Strategy
+
+1. **Config override** — If `port` is set in `~/.pi/agent/speak.json`, that port is tried first.
+2. **Persisted port** — The last successfully bound port is remembered and tried first on restart.
+3. **Standard fallback** — Ports 7125–7130 are tried in sequence.
+4. **Random high ports** — If all standard ports are taken, up to 5 random ports in range 7200–7999 are tried.
+
+If all ports are exhausted, a clear error is logged:
+```
+All ports in use. No available port in 7125-7130 or 7200-7999.
+```
+
+### Configuration
+
+Override the port in `~/.pi/agent/speak.json`:
+```json
+{
+  "port": 7150
+}
+```
 
 ## Testing
 

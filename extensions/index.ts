@@ -52,6 +52,17 @@ let DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
 // Candidate ports for fallback
 const FALLBACK_PORTS = [7125, 7126, 7127, 7128, 7129, 7130];
 
+// High port range for random fallback when all standard ports are taken
+const HIGH_PORT_MIN = 7200;
+const HIGH_PORT_MAX = 7999;
+const MAX_RANDOM_ATTEMPTS = 5;
+
+// Persisted port — remembers the last successful port so we try it first on restart
+let persistedPort: number | null = null;
+
+// Track which ports we've tried for logging
+let lastPortAttemptLog: string[] = [];
+
 const DEFAULT_VOICE = CONFIG.voice ?? "alba";
 
 const VOICE_NAMES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"];
@@ -82,9 +93,69 @@ function daemonHealth(): Promise<boolean> {
   });
 }
 
+// Try all known candidate ports to see if the daemon is already alive on any of them
+function daemonHealthAnywhere(): Promise<number | null> {
+  return new Promise((resolve) => {
+    const candidates = new Set<number>();
+    if (CONFIG.port && CONFIG.port >= 1024 && CONFIG.port <= 65535) {
+      candidates.add(CONFIG.port);
+    }
+    if (persistedPort !== null) {
+      candidates.add(persistedPort);
+    }
+    for (const p of FALLBACK_PORTS) {
+      candidates.add(p);
+    }
+    const ports = Array.from(candidates);
+    let foundPort: number | null = null;
+    let completed = 0;
+    for (const port of ports) {
+      const req = http.get(`http://${DAEMON_HOST}:${port}/health`, { agent: healthAgent }, (res) => {
+        if (foundPort === null && res.statusCode === 200) {
+          foundPort = port;
+        }
+        completed++;
+        if (completed === ports.length) {
+          resolve(foundPort);
+        }
+      });
+      req.on("error", () => {
+        completed++;
+        if (completed === ports.length) {
+          resolve(foundPort);
+        }
+      });
+      // 2s timeout per port — whichever responds fastest wins
+      req.setTimeout(2000, () => {
+        req.destroy();
+        completed++;
+        if (completed === ports.length) {
+          resolve(foundPort);
+        }
+      });
+    }
+    // If no candidates, resolve immediately
+    if (ports.length === 0) {
+      resolve(null);
+    }
+  });
+}
+
 async function ensureDaemonRunning(): Promise<boolean> {
+  // First check if daemon is alive on the current port
   if (await daemonHealth()) {
     daemonReady = true;
+    return true;
+  }
+
+  // Daemon not on current port — check all known candidate ports
+  const alivePort = await daemonHealthAnywhere();
+  if (alivePort !== null) {
+    DAEMON_PORT = alivePort;
+    DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
+    persistedPort = alivePort;
+    daemonReady = true;
+    console.log("[speak] Found existing daemon on port " + alivePort);
     return true;
   }
 
@@ -96,11 +167,56 @@ async function ensureDaemonRunning(): Promise<boolean> {
   });
   await new Promise((r) => setTimeout(r, 500));
 
-  // Try ports 7125-7130, read stdout for PORT_BOUND: to discover actual port
+  // ───────────────────────────────────────────────────────
+  // Port negotiation strategy:
+  //   1. Try CONFIG.port (if set in ~/.pi/agent/speak.json)
+  //   2. Try persistedPort from last successful run
+  //   3. Try standard fallback ports 7125-7130
+  //   4. Try random high ports 7200-7999 (up to 5 attempts)
+  // ───────────────────────────────────────────────────────
   let boundPort: number | null = null;
-  for (const candidatePort of FALLBACK_PORTS) {
+  let boundChild: ReturnType<typeof spawn> | null = null;
+  lastPortAttemptLog = [];
+
+  // Build ordered list of ports to try
+  const portsToTry: number[] = [];
+
+  // Config port override (already set as DAEMON_PORT, but try explicitly)
+  if (CONFIG.port && CONFIG.port >= 1024 && CONFIG.port <= 65535) {
+    portsToTry.push(CONFIG.port);
+  }
+
+  // Persisted port from last successful run (skip if same as config port)
+  if (persistedPort !== null && persistedPort !== CONFIG.port) {
+    portsToTry.push(persistedPort);
+  }
+
+  // Standard fallback ports (skip duplicates)
+  for (const p of FALLBACK_PORTS) {
+    if (!portsToTry.includes(p)) {
+      portsToTry.push(p);
+    }
+  }
+
+  // Random high ports (up to MAX_RANDOM_ATTEMPTS unique ports not already in list)
+  const highPorts: number[] = [];
+  while (highPorts.length < MAX_RANDOM_ATTEMPTS) {
+    const candidate = HIGH_PORT_MIN + Math.floor(Math.random() * (HIGH_PORT_MAX - HIGH_PORT_MIN + 1));
+    if (!portsToTry.includes(candidate) && !highPorts.includes(candidate)) {
+      highPorts.push(candidate);
+    }
+  }
+  for (const p of highPorts) {
+    portsToTry.push(p);
+  }
+
+  console.log("[speak] Trying ports: " + portsToTry.join(", "));
+
+  for (const candidatePort of portsToTry) {
+    lastPortAttemptLog.push(String(candidatePort));
     const child = spawn(VENV_PYTHON, [DAEMON_SCRIPT, "--port", String(candidatePort)], {
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
 
     let stdoutBuf = "";
@@ -113,6 +229,8 @@ async function ensureDaemonRunning(): Promise<boolean> {
     });
 
     child.on("close", (code) => {
+      if (boundChild !== null) return;
+      if (daemonProcess !== child) return;
       if (code !== 0 && code !== null) {
         console.log("[speak] daemon exited (code:" + code + ")");
       }
@@ -120,6 +238,8 @@ async function ensureDaemonRunning(): Promise<boolean> {
       daemonProcess = null;
     });
     child.on("error", (e) => {
+      if (boundChild !== null) return;
+      if (daemonProcess !== child) return;
       console.error("[speak] daemon error:", e.message);
       daemonReady = false;
       daemonProcess = null;
@@ -127,12 +247,30 @@ async function ensureDaemonRunning(): Promise<boolean> {
 
     daemonProcess = child;
 
-    // Wait for daemon to start and read PORT_BOUND: from stdout
-    await new Promise((r) => setTimeout(r, 2000));
+    // Wait for PORT_BOUND: on stdout or process exit, whichever comes first.
+    // Model load + voice pre-warm takes ~1-3s.
+    let started = false;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { resolve(); }, 3000);
+      const checkInterval = setInterval(() => {
+        if (stdoutBuf.includes("PORT_BOUND:")) {
+          clearTimeout(timer);
+          started = true;
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+      child.on("close", () => {
+        clearInterval(checkInterval);
+        if (!started) { clearTimeout(timer); started = true; resolve(); }
+      });
+    });
     const match = stdoutBuf.match(/PORT_BOUND:(\d+)/);
     if (match) {
       boundPort = parseInt(match[1], 10);
-      console.log("[speak] Daemon bound on port " + boundPort);
+      boundChild = child;
+      persistedPort = boundPort;
+      console.log("[speak] Daemon bound on port " + boundPort + " (persisted for next start)");
       break;
     }
     // Kill failed attempt
@@ -142,6 +280,12 @@ async function ensureDaemonRunning(): Promise<boolean> {
   if (boundPort) {
     DAEMON_PORT = boundPort;
     DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
+  } else {
+    // All ports exhausted — log a clear error
+    const triedPorts = [...new Set(lastPortAttemptLog)].join(", ");
+    console.error(
+      "[speak] All ports in use. No available port in 7125-7130 or 7200-7999. Tried: " + triedPorts
+    );
   }
 
   // Health check on the actual port
@@ -297,6 +441,7 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
 
     const url = `${DAEMON_URL}/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`;
 
+    // Write to temp file — afplay doesn't support stdin on macOS
     tmpFile = `${execSync("mktemp -d -t speakturbo_XXXXX").toString().trim()}/audio.wav`;
 
     // Register abort handler for cleanup
@@ -318,14 +463,17 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
     // Download audio using fetch + writeStream
     const response = await fetch(url);
     if (!response.ok) {
+      cleanup();
       throw new Error(`TTS daemon returned ${response.status}`);
     }
     const body = response.body;
     if (!body) {
-      throw new Error('Empty response body from TTS daemon');
+      cleanup();
+      throw new Error("Empty response body from TTS daemon");
     }
     const reader = body.getReader();
     const ws = fs.createWriteStream(tmpFile);
+
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -347,8 +495,8 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
       return false;
     }
 
-    // Play audio asynchronously
-    playProcess = spawn("afplay", [tmpFile], { stdio: "ignore", timeout: 120_000 });
+    // Play audio
+    playProcess = spawn("afplay", [tmpFile], { stdio: "ignore" });
     currentPlayback = { process: playProcess, tmpFile: tmpFile };
 
     await new Promise<void>((playResolve, playReject) => {
@@ -367,6 +515,10 @@ async function speakText(text: string, voice: string, signal?: AbortSignal): Pro
     return true;
   } catch (e) {
     cleanup();
+    if (currentPlayback) {
+      try { currentPlayback.process.kill(); } catch {}
+      currentPlayback = null;
+    }
     console.error("[speak] speak error:", (e as Error).message?.slice(0, 120));
     return false;
   }
@@ -394,6 +546,11 @@ export function _setDaemonProcess(proc: ReturnType<typeof spawn> | null) { daemo
 export function _setCurrentPlayback(val: { process: ReturnType<typeof spawn>; tmpFile: string } | null) { currentPlayback = val; }
 export function _getPlaybackController() { return playbackController; }
 export function _speakText(text: string, voice: string, signal?: AbortSignal): Promise<boolean> { return speakText(text, voice, signal); }
+export function _getPersistedPort(): number | null { return persistedPort; }
+export function _setPersistedPort(val: number | null) { persistedPort = val; }
+export function _getLastPortAttemptLog(): string[] { return lastPortAttemptLog; }
+export function _getHighPortConstants() { return { HIGH_PORT_MIN, HIGH_PORT_MAX, MAX_RANDOM_ATTEMPTS }; }
+export function _daemonHealthAnywhere(): Promise<number | null> { return daemonHealthAnywhere(); }
 
 export default function voiceOutputExtension(pi: ExtensionAPI) {
   ensureDaemonRunning();

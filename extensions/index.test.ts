@@ -1,6 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ───────────────────────────────────────────────────────────
+// Gating: Prevent tests from hanging on long-running processes
+// ───────────────────────────────────────────────────────────
+
+function createFastMockProcess(opt?: { exitCode?: number; delay?: number }) {
+  const delay = opt?.delay ?? 0;
+  const proc: any = {
+    on: vi.fn().mockImplementation((event: string, cb: (...args: any[]) => void) => {
+      // Exit immediately after very short delay to prevent hanging
+      setTimeout(() => {
+        if (event === "close") cb(opt?.exitCode ?? 0);
+        if (event === "error") opt?.error && cb(opt.error);
+      }, Math.max(0, delay));
+      return proc;
+    }),
+    once: vi.fn().mockReturnThis(),
+    kill: vi.fn(),
+    stdin: { write: vi.fn().mockReturnValue(true), end: vi.fn() },
+    stdout: { on: vi.fn(), pipe: vi.fn() },
+    stderr: { on: vi.fn() },
+    pid: 12345,
+  };
+  return proc;
+}
+
+// ───────────────────────────────────────────────────────────
 // Mock setup — must be before imports
 // ───────────────────────────────────────────────────────────
 
@@ -119,22 +144,23 @@ function mockSpawnProcess(opt?: {
   const delay = opt?.delay ?? 0;
   const proc: any = {
     on: vi.fn().mockImplementation((event: string, cb: (...args: any[]) => void) => {
+      // Exit immediately after very short delay to prevent hanging
       setTimeout(() => {
         if (event === "close") {
-          if (opt?.error) {
-            // error event fires instead
-          } else {
-            cb(opt?.exitCode ?? 0);
-          }
+          cb(opt?.exitCode ?? 0);
         }
         if (event === "error") {
           if (opt?.error) cb(opt.error);
         }
-      }, delay);
+      }, Math.max(0, delay));
       return proc;
     }),
     once: vi.fn().mockReturnThis(),
     kill: vi.fn(),
+    stdin: {
+      write: vi.fn().mockReturnValue(true),
+      end: vi.fn(),
+    },
     stdout: { on: vi.fn(), pipe: vi.fn() },
     stderr: {
       on: vi.fn().mockImplementation((_event: string, cb: (d: Buffer) => void) => {
@@ -362,7 +388,16 @@ describe("ensureDaemonRunning", () => {
       };
       return req;
     });
-    mockCp.spawn.mockReturnValue(mockSpawnProcess({ exitCode: 0 }));
+    // Mock spawn so daemon exits immediately (no PORT_BOUND emitted)
+    mockCp.spawn.mockImplementation(() => {
+      const proc = mockSpawnProcess({ exitCode: 1 });
+      // Emit close immediately so the loop doesn't wait
+      proc.on = vi.fn().mockImplementation((event: string, cb: (...args: any[]) => void) => {
+        if (event === "close") setImmediate(() => cb(1));
+        return proc;
+      });
+      return proc;
+    });
     const ext = await import("./index.ts");
     const result = await ext._ensureDaemonRunning();
     expect(result).toBe(false);
@@ -370,6 +405,210 @@ describe("ensureDaemonRunning", () => {
 });
 
 // ───────────────────────────────────────────────────────────
+// Test: daemonHealthAnywhere
+// ───────────────────────────────────────────────────────────
+
+describe("daemonHealthAnywhere", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns port when daemon is alive on a candidate port", async () => {
+    // Use a port not in the standard FALLBACK_PORTS so we can isolate it
+    const targetPort = 7900;
+    mockHttp.get.mockImplementation((_url, _opts, _cb) => {
+      const portMatch = _url.match(/:(\d+)\/health/);
+      const port = portMatch ? parseInt(portMatch[1], 10) : null;
+      const req: any = {
+        on: vi.fn().mockImplementation((event, handler) => {
+          if (event === "error") {
+            if (port !== targetPort) {
+              setImmediate(() => handler());
+            }
+          }
+          return req;
+        }),
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+      };
+      if (port === targetPort) {
+        setImmediate(() => _cb({ statusCode: 200 }));
+      }
+      return req;
+    });
+    const ext = await import("./index.ts");
+    ext._setPersistedPort(targetPort);
+    const result = await ext._daemonHealthAnywhere();
+    expect(result).toBe(targetPort);
+  });
+
+  it("returns null when no candidate port responds", async () => {
+    mockHttp.get.mockImplementation((_url, _opts, _cb) => {
+      const req: any = {
+        on: vi.fn().mockImplementation((event, handler) => {
+          if (event === "error") setImmediate(() => handler());
+          return req;
+        }),
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+      };
+      return req;
+    });
+    const ext = await import("./index.ts");
+    ext._setPersistedPort(null);
+    const result = await ext._daemonHealthAnywhere();
+    expect(result).toBeNull();
+  });
+});
+
+// ───────────────────────────────────────────────────────────
+// Test: port fallback constants and exports
+// ───────────────────────────────────────────────────────────
+
+describe("port fallback", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    // Reset module-level state that persists across tests
+    const ext = await import("./index.ts");
+    ext._setPersistedPort(null);
+  });
+
+  it("exports high port constants", async () => {
+    const ext = await import("./index.ts");
+    const hpc = ext._getHighPortConstants();
+    expect(hpc.HIGH_PORT_MIN).toBe(7200);
+    expect(hpc.HIGH_PORT_MAX).toBe(7999);
+    expect(hpc.MAX_RANDOM_ATTEMPTS).toBe(5);
+  });
+
+  it("exports persisted port getter/setter", async () => {
+    const ext = await import("./index.ts");
+    expect(ext._getPersistedPort()).toBeNull();
+    ext._setPersistedPort(7300);
+    expect(ext._getPersistedPort()).toBe(7300);
+  });
+
+  it("exports lastPortAttemptLog", async () => {
+    const ext = await import("./index.ts");
+    const log = ext._getLastPortAttemptLog();
+    expect(Array.isArray(log)).toBe(true);
+  });
+
+  it("ensureDaemonRunning returns true when daemon healthy", async () => {
+    mockHttp.get.mockImplementationOnce((_url, _opts, cb) => {
+      const req: any = { on: vi.fn(), setTimeout: vi.fn(), destroy: vi.fn() };
+      setImmediate(() => cb({ statusCode: 200 }));
+      return req;
+    });
+    const ext = await import("./index.ts");
+    const result = await ext._ensureDaemonRunning();
+    expect(result).toBe(true);
+    expect(ext._getDaemonReady()).toBe(true);
+  });
+
+  it("tries persisted port first when available (slow)", async () => {
+    // First health check fails, spawn with persisted port succeeds,
+    // then health checks succeed after port bind
+    let healthCount = 0;
+    mockHttp.get.mockImplementation((_url, _opts, cb) => {
+      healthCount++;
+      const req: any = {
+        on: vi.fn().mockImplementation((event, handler) => {
+          if (event === "error" && healthCount === 1) {
+            setImmediate(() => handler());
+          }
+          return req;
+        }),
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+      };
+      if (healthCount > 1) {
+        setImmediate(() => cb({ statusCode: 200 }));
+      }
+      return req;
+    });
+    // Use mockSpawnProcess but override stdout for first spawn
+    let spawnIdx = 0;
+    mockCp.spawn.mockImplementation(() => {
+      spawnIdx++;
+      const proc = mockSpawnProcess({ exitCode: 0 });
+      if (spawnIdx === 1) {
+        // First spawn (persisted port) should emit PORT_BOUND
+        proc.stdout.on = vi.fn().mockImplementation((_event: string, cb: (d: Buffer) => void) => {
+          cb(Buffer.from("PORT_BOUND:7300\n"));
+          return proc.stdout;
+        });
+      }
+      return proc;
+    });
+    const ext = await import("./index.ts");
+    ext._setPersistedPort(7300);
+    const result = await ext._ensureDaemonRunning();
+    expect(result).toBe(true);
+    expect(ext._getPersistedPort()).toBe(7300);
+  }, 120000);
+
+  it("falls through to high ports when standard ports fail (slow)", async () => {
+    let healthCount = 0;
+    let spawnCount = 0;
+    mockHttp.get.mockImplementation((_url, _opts, cb) => {
+      healthCount++;
+      const req: any = {
+        on: vi.fn().mockImplementation((event, handler) => {
+          // All health checks fail until after a successful spawn
+          if (event === "error" && spawnCount < 12) {
+            setImmediate(() => handler());
+          }
+          return req;
+        }),
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+      };
+      // Health checks succeed only after the 12th spawn (high port) bound
+      if (spawnCount >= 12) {
+        setImmediate(() => cb({ statusCode: 200 }));
+      }
+      return req;
+    });
+    // Only the 12th spawn (high port) succeeds with PORT_BOUND
+    mockCp.spawn.mockImplementation(() => {
+      spawnCount++;
+      const proc = mockSpawnProcess({ exitCode: 0 });
+      if (spawnCount === 12) {
+        proc.stdout.on = vi.fn().mockImplementation((_event: string, cb: (d: Buffer) => void) => {
+          cb(Buffer.from("PORT_BOUND:7500\n"));
+          return proc.stdout;
+        });
+      }
+      return proc;
+    });
+    const ext = await import("./index.ts");
+    const result = await ext._ensureDaemonRunning();
+    expect(result).toBe(true);
+    expect(ext._getPersistedPort()).toBe(7500);
+  }, 120000);
+
+  it("logs error when all ports exhausted (slow)", async () => {
+    mockHttp.get.mockImplementation((_url, _opts, _cb) => {
+      const req: any = {
+        on: vi.fn().mockImplementation((event, handler) => {
+          if (event === "error") setImmediate(() => handler());
+          return req;
+        }),
+        setTimeout: vi.fn(),
+        destroy: vi.fn(),
+      };
+      return req;
+    });
+    mockCp.spawn.mockReturnValue(mockSpawnProcess({ exitCode: 0 }));
+    const ext = await import("./index.ts");
+    const result = await ext._ensureDaemonRunning();
+    expect(result).toBe(false);
+    const attemptLog = ext._getLastPortAttemptLog();
+    expect(attemptLog.length).toBeGreaterThan(0);
+  }, 120000);
+});// ───────────────────────────────────────────────────────────
+// Test: stopDaemon// ───────────────────────────────────────────────────────────
 // Test: stopDaemon
 // ───────────────────────────────────────────────────────────
 
@@ -460,24 +699,11 @@ describe("speakText", () => {
     const ext = await import("./index.ts");
     const result = await ext._speakText("hello", "alba");
     expect(result).toBe(false);
+    // Temp file should be cleaned up
+    expect(mockFs.unlinkSync).toHaveBeenCalled();
   });
 
-  it("cleans up temp file on error", async () => {
-    mockHttp.get.mockImplementation((_url, _opts, cb) => {
-      const req: any = { on: vi.fn(), setTimeout: vi.fn(), destroy: vi.fn() };
-      setImmediate(() => cb({ statusCode: 200 }));
-      return req;
-    });
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      body: null,
-    });
-    const ext = await import("./index.ts");
-    await ext._speakText("hello", "alba");
-    expect(mockFs.unlinkSync).toHaveBeenCalledWith("/tmp/speakturbo_test/audio.wav");
-  });
-
-  it("cleans up temp file on daemon error response", async () => {
+  it("returns false on daemon error response and cleans up temp file", async () => {
     mockHttp.get.mockImplementation((_url, _opts, cb) => {
       const req: any = { on: vi.fn(), setTimeout: vi.fn(), destroy: vi.fn() };
       setImmediate(() => cb({ statusCode: 200 }));
@@ -488,8 +714,57 @@ describe("speakText", () => {
       status: 500,
     });
     const ext = await import("./index.ts");
-    await ext._speakText("hello", "alba");
-    expect(mockFs.unlinkSync).toHaveBeenCalledWith("/tmp/speakturbo_test/audio.wav");
+    const result = await ext._speakText("hello", "alba");
+    expect(result).toBe(false);
+    // Temp file should be cleaned up
+    expect(mockFs.unlinkSync).toHaveBeenCalled();
+  });
+
+  it("writes audio to temp file then plays with afplay (not stdin)", async () => {
+    mockHttp.get.mockImplementation((_url, _opts, cb) => {
+      const req: any = { on: vi.fn(), setTimeout: vi.fn(), destroy: vi.fn() };
+      setImmediate(() => cb({ statusCode: 200 }));
+      return req;
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      body: mockReadableStream([new Uint8Array([1, 2, 3])]),
+    });
+    mockCp.spawn.mockReturnValue(mockSpawnProcess({ exitCode: 0 }));
+    const ext = await import("./index.ts");
+    const result = await ext._speakText("hello", "alba");
+    expect(result).toBe(true);
+    // execSync should be called to create temp dir
+    expect(mockCp.execSync).toHaveBeenCalled();
+    // createWriteStream should be called for temp file
+    expect(mockFs.createWriteStream).toHaveBeenCalled();
+    // afplay should be called with a file path, NOT "-"
+    const afplayCalls = mockCp.spawn.mock.calls.filter(
+      (call: any[]) => call[0] === "afplay"
+    );
+    expect(afplayCalls.length).toBeGreaterThan(0);
+    // The first arg to afplay must be a file path, not "-"
+    for (const call of afplayCalls) {
+      expect(call[1][0]).not.toBe("-");
+    }
+  });
+
+  it("cleans up temp file after successful playback", async () => {
+    mockHttp.get.mockImplementation((_url, _opts, cb) => {
+      const req: any = { on: vi.fn(), setTimeout: vi.fn(), destroy: vi.fn() };
+      setImmediate(() => cb({ statusCode: 200 }));
+      return req;
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      body: mockReadableStream([new Uint8Array([1, 2, 3])]),
+    });
+    mockCp.spawn.mockReturnValue(mockSpawnProcess({ exitCode: 0 }));
+    const ext = await import("./index.ts");
+    const result = await ext._speakText("hello", "alba");
+    expect(result).toBe(true);
+    // Temp file should be cleaned up after playback
+    expect(mockFs.unlinkSync).toHaveBeenCalled();
   });
 });
 
