@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1] — 2026-06-06
+
+### Fixed
+
+- **TTSRequest not a Pydantic model** — `TTSRequest` was a plain class instead of a proper Pydantic `BaseModel` subclass, causing FastAPI to reject the route with `FastAPIError: Invalid args for response field`. Added `from pydantic import BaseModel` and changed `class TTSRequest:` to `class TTSRequest(BaseModel)`.
+- **Port range too narrow** — `min(port + 5, port + 10)` limited port scanning to 5 ports instead of the intended 10. Changed to `port + 10`.
+
 ## [2.1.0] — 2026-05-28
 
 ### Added
