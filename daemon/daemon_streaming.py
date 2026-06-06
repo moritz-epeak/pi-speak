@@ -15,6 +15,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
 
 from pocket_tts import TTSModel
 
@@ -95,7 +96,7 @@ async def health():
     }
 
 
-class TTSRequest:
+class TTSRequest(BaseModel):
     text: str
     voice: str = "alba"
 
@@ -152,7 +153,7 @@ def main():
 
     # Try ports from the requested one up to +5 (fallback range)
     port = args.port
-    max_port = min(port + 5, port + 10)  # At most 10 ports
+    max_port = port + 10  # Try up to 10 ports
     actual_port = None
     for try_port in range(port, max_port):
         import socket
